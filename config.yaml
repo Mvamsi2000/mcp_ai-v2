@@ -1,17 +1,17 @@
 # === MCP-AI v2 — PRODUCT CONFIG ===
-# Run:
+# Run with:
 #   python -m mcp_ai.main --config ./mcp_ai/config.yaml
 #
-# Philosophy:
-# - FAST pass (cheap) on everything → decide when to run DEEP (expensive).
-# - Use local LLMs by default; only stage hard files to cloud with client approval.
-# - Emit clean catalog (JSONL + CSV). Keep logs structured and rotated.
+# Design:
+# • FAST pass on everything (cheap) → choose DEEP (expensive) via auto-triggers.
+# • Prefer LOCAL LLMs; stage hard cases for CLOUD with explicit approval.
+# • Emit clean catalog (JSONL + CSV) per-run + global rollup. Structured logs.
 
 # ───────────────────────────── Runtime mode ─────────────────────────────
-mode_selector: prompt          # placeholder for future CLI-driven modes
-scan_profile: deep             # which profile from `profiles:` to apply
+# === MCP-AI v2 — PRODUCT CONFIG ===
+mode_selector: prompt
+scan_profile: deep
 
-# ───────────────────────────── Scope ─────────────────────────────
 paths:
   roots:
     - "/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles"
@@ -20,7 +20,6 @@ paths:
     - "**/tmp/**"
     - "**/__pycache__/**"
 
-# ───────────────────────────── Profiles (extraction) ─────────────────────────────
 profiles:
   basic:
     text_extract: true
@@ -37,46 +36,53 @@ profiles:
     max_file_mb: 100
 
   deep:
-    # --- core toggles ---
     text_extract: true
     ocr: true
     expand_archives: true
-    include_types: ["*"]         # accept everything; type_policies gate behavior
+    include_types: ["*"]
     max_file_mb: 500
     timebox_ocr_s: 40
 
-    # --- quality & enrichment knobs ---
     detect_language: true
     collect_exif: true
-    table_detection: "light"      # off | light (placeholder)
+    table_detection: "light"
     text_quality_probe: true
 
-    # --- PDF parsing cascade (adaptive) ---
     parse_pdf_order: ["pymupdf", "pdfminer", "pdfplumber", "ocr"]
 
-    # --- OCR cascade (adaptive) ---
-    # Azure is only tried if allow_cloud_ocr=true AND Azure env vars exist.
+    # A/V transcription cascade
+    av_transcribe_order: ["faster_whisper", "whisper", "demo"]
+    av_max_seconds: 0   # 0 = full file; set e.g. 600 to cap at 10 min for speed
+    av_chunk_seconds: 600       # split long audio into 10-minute chunks
+    av_lang_probe_seconds: 60   # quick probe to guess language
+
+
+
+    # OCR cascade
     ocr_engine_order: ["easyocr", "tesseract", "rapidocr", "paddle", "azure"]
     allow_cloud_ocr: false
     ocr_lang: "eng"
     ocr_dpi: 144
     ocr_max_pages: 6
-
-    # --- A/V transcription cascade (adaptive) ---
-    av_transcribe_order: ["demo", "faster_whisper", "whisper"]
-
-# ───────────────────────────── Type policies (what to do per extension) ─────────────────────────────
+# ───────────────────────────── Type policies (per-extension behavior) ──────────
 type_policies:
-  # Completely skip these (no extraction)
+  # Completely skip (no extraction)
   skip: [".iso", ".img", ".bin", ".ds_store"]
-  # Metadata-only for heavy binaries/design/media
-  metadata_only: [".psd", ".ai", ".mod", ".mp4", ".mov", ".mkv"]
-  # Try text first; if empty, keep metadata-only
+
+  # Metadata-only (no text/ocr/transcripts) — heavy design/binary or unknown custom
+  metadata_only: [".psd", ".ai", ".mod"]   # keep .mod here until a parser is added
+
+  # Try text first; if empty → fall back to metadata-only
   try_text_then_metadata_only: [".pptx", ".xlsx", ".zip"]
-  # Prefer OCR (PDF still attempts text parse before OCR)
+
+  # Prefer OCR for these; PDF still tries text parsers before OCR
   prefer_ocr: [".pdf", ".tiff", ".png", ".jpg", ".jpeg"]
 
-# ───────────────────────────── Domain hints ─────────────────────────────
+# NOTE: Do NOT include audio/video in metadata_only if you want transcripts:
+#   Audio: .mp3, .wav, .m4a, .aac, .flac
+#   Video: .mp4, .mov, .mkv
+
+# ───────────────────────────── Domain hints (helps LLM/heuristics) ─────────────
 domain:
   detect: hybrid
   list: [finance, legal, hr, it, marketing, engineering, operations, healthcare, education, general]
@@ -86,43 +92,51 @@ domain:
     hr:       ["employee","payroll","benefits","recruiting","onboarding"]
     it:       ["server","api","database","kubernetes","terraform","endpoint","log"]
 
-# ───────────────────────────── AI enrichment ─────────────────────────────
+# ───────────────────────────── AI enrichment (FAST/DEEP) ───────────────────────
 ai:
-  mode: local                  # none | local | cloud
-  provider: ollama             # ollama | azure
-  fast_pass: true
+  mode: local                    # none | local | cloud
+  provider: ollama               # ollama | azure
+  fast_pass: true                # run FAST on every doc
 
   deep:
-    # How to run DEEP:
-    # - auto: run deep only when triggers fire (recommended)
-    # - always: run deep on every file
-    # - never: never run deep
-    policy: auto               # auto | always | never
+    # When to run DEEP:
+    #  • auto   → run only when triggers fire (recommended)
+    #  • always → run on every file
+    #  • never  → never run
+    policy: auto                 # auto | always | never
 
-    # Auto triggers for 'auto' policy
+    # Auto-triggers (used when policy=auto)
     auto_triggers:
-      low_confidence_below: 0.75   # if FAST confidence < 0.75 -> deep
-      contains_pii: false           # if FAST flags PII (or regex detects) -> deep
-      high_value_flag: false        # if caller passes high_value=True -> deep
+      low_confidence_below: 0.75 # if FAST confidence < threshold → DEEP
+      contains_pii: true         # if FAST flags PII → DEEP
+      high_value_flag: true      # allow caller to force DEEP on specific docs
 
-    sampling: smart                # smart | full
-    confidence_threshold: 0.75     # legacy compatibility
+    sampling: smart              # smart (sample head/tail) | full (entire text)
+    confidence_threshold: 0.75   # legacy key still honored where used
     pii_redaction: true
     max_chars_fast: 6000
     max_chars_local: 60000
     max_chars_cloud: 120000
 
-  # Local (Ollama)
+  # Local (Ollama) — pull these models once via `ollama pull <model>`
   local:
     endpoint: "http://127.0.0.1:11434"
     fast_model: "mistral:7b-instruct"
     deep_model: "qwen2.5:14b-instruct"
     timeout_s: 200
-    # retry policy used by llm_agent
     retries: 3
     backoff_s: 1.2
+  
+  # NEW: A/V transcription tuning for faster-whisper
+    faster_whisper:
+      model: "base"        # or "tiny.en" for speed
+      device: "cpu"        # "cpu" or "cuda" if you have GPU
+      compute_type: "int8" # "int8", "int8_float32", "float16", ...
+      language: null            # null = auto; "en" to force English      vad_filter: true
+      beam_size: 1
+      no_speech_threshold: 0.2
 
-# Cloud (Azure OpenAI) — used only if ai.mode=cloud
+# Cloud (Azure OpenAI) — only used if ai.mode=cloud
 cloud:
   provider: "azure"
   endpoint: "https://YOUR-RESOURCE.openai.azure.com"
@@ -136,13 +150,13 @@ cloud:
     deep_input_per_1k: 0.0030
     deep_output_per_1k: 0.0060
 
-# Optional: Azure Document Intelligence (OCR) — only used if allow_cloud_ocr=true
+# Optional: Azure Document Intelligence (OCR) — used only if allow_cloud_ocr=true
 azure:
   document_intelligence:
     endpoint_env: "AZURE_FORMREC_ENDPOINT"
     key_env: "AZURE_FORMREC_KEY"
 
-# ───────────────────────────── Safety / demo ─────────────────────────────
+# ───────────────────────────── Safety & demo ───────────────────────────────────
 safety:
   allow_outbound_network: false   # keep OFF for local-only runs
   pii_redaction: true
@@ -152,7 +166,7 @@ demo:
   fixture_dir: "./mcp_ai/fixtures"
   simulate_latency_ms: 150
 
-# ───────────────────────────── Budgets / archival ─────────────────────────────
+# ───────────────────────────── Budgets / archival ──────────────────────────────
 budgets:
   run_usd: 25.0
   per_file_usd: 0.03
@@ -160,24 +174,24 @@ budgets:
 archival:
   stale_years: 6
 
-# ───────────────────────────── Concurrency / limits ─────────────────────────────
+# ───────────────────────────── Concurrency / limits ────────────────────────────
 limits:
   max_concurrency_scan: 64
   max_concurrency_extract: 8
 
-# ───────────────────────────── Storage / outputs ─────────────────────────────
+# ───────────────────────────── Storage / outputs ───────────────────────────────
 storage:
   out_root: "./mcp_ai/output_files"
   per_run_outputs: true
   catalog_jsonl: "./mcp_ai/output_files/metadata_catalog.jsonl"
   catalog_csv: "./mcp_ai/output_files/metadata_catalog.csv"
   state_db: "./mcp_ai/output_files/state.sqlite"
-  cloud_stage_dir: "./mcp_ai/output_files/cloud_stage"   # files suggested for cloud deep
+  cloud_stage_dir: "./mcp_ai/output_files/cloud_stage"   # suggested files for cloud DEEP
 
-# ───────────────────────────── Logging ─────────────────────────────
+# ───────────────────────────── Logging ─────────────────────────────────────────
 logging:
-  level: INFO                # DEBUG | INFO | WARNING | ERROR
+  level: DEBUG                    # DEBUG | INFO | WARNING | ERROR
   to_file: true
   file_path: "./mcp_ai/output_files/mcp_ai.log"
-  rotate_bytes: 10485760     # 10 MB
+  rotate_bytes: 10485760         # 10 MB
   backups: 3

@@ -1,14 +1,19 @@
 # mcp_ai/main.py
 from __future__ import annotations
 
-import argparse, json, logging, os, time, uuid
+import argparse
+import json
+import logging
+import os
+import time
+import uuid
 from typing import Any, Dict
 
 from .utils import load_yaml, setup_logging, BudgetLedger, now_iso, ensure_dir
-from .scanner import scan_files                # assumes it yields dicts with "path", "size_bytes", "sha1"
+from .scanner import scan_files                # yields dicts with "path", "size_bytes", "sha1"
 from .extractor import extract_content         # returns dict with "extraction_status", "skipped_reason", "text", "meta"
 from .ai_router import ai_enrich               # ai_enrich(text, cfg, doc_id, budget, high_value=False, decision_trace=False)
-from .catalog_writer import CatalogWriter      # per-run + global outputs
+from .catalog_writer import CatalogWriter      # handles per-run + global outputs
 
 log = logging.getLogger("main")
 
@@ -20,6 +25,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--always-deep", action="store_true", help="Force deep pass on every file (ai.deep.policy=always)")
     p.add_argument("--dry-run", action="store_true", help="Extract only; skip AI and writing")
     p.add_argument("--limit", type=int, default=0, help="Process only the first N files")
+    p.add_argument("--high-value", action="store_true", help="Hint router to treat files as high value")
+    p.add_argument("--trace", action="store_true", help="Include decision trace from AI router")
     return p.parse_args()
 
 
@@ -63,7 +70,10 @@ def main() -> None:
     profile = profiles.get(profile_name, {}) or {}
     type_policies = (cfg.get("type_policies") or {})
 
-    log.info("Run %s started (profile=%s, always_deep=%s, dry_run=%s)", run_id, profile_name, args.always_deep, args.dry_run)
+    log.info(
+        "Run %s started (profile=%s, always_deep=%s, dry_run=%s)",
+        run_id, profile_name, args.always_deep, args.dry_run
+    )
 
     processed = 0
     t0 = time.time()
@@ -74,85 +84,109 @@ def main() -> None:
         processed += 1
 
         path = f.get("path")
+        if not path:
+            continue
+
         log.info("→ [%d] %s", processed, path)
 
         # 1) EXTRACT
         try:
-            extres = extract_content(path, profile, type_policies)
+            # pass cfg so A/V extraction can use ASR & other settings
+            extres = extract_content(path, profile, type_policies, cfg=cfg)
         except Exception as e:
             log.warning("Extraction failed on %s: %r", path, e)
             # Write a minimal error row so the run is traceable
-            writer.write_item({
-                "run_id": run_id,
-                "path": path,
-                "filename": os.path.basename(path or ""),
-                "extraction_status": "error",
-                "skipped_reason": str(e),
-                "timestamp": now_iso(),
-            })
+            if not args.dry_run:
+                writer.write_item({
+                    "run_id": run_id,
+                    "path": path,
+                    "filename": os.path.basename(path or ""),
+                    "size_bytes": f.get("size_bytes"),
+                    "sha1": f.get("sha1"),
+                    "extraction_status": "error",
+                    "skipped_reason": str(e),
+                    "timestamp": now_iso(),
+                })
             continue
 
         text = extres.get("text") or ""
         meta = extres.get("meta") or {}
+        extraction_status = extres.get("extraction_status")
 
         # 2) AI (unless dry-run)
         ai: Dict[str, Any] = {}
         if not args.dry_run:
-            try:
-                # Capture decision trace to understand why deep ran
-                ai = ai_enrich(text, cfg, doc_id=path, budget=ledger, high_value=False, decision_trace=True)
-            except Exception as e:
-                log.warning("AI enrich failed on %s: %r", path, e)
-                ai = {}
+            # If there's no text (e.g., metadata_only), skip AI to save time/cost.
+            if text.strip():
+                try:
+                    ai = ai_enrich(
+                        text,
+                        cfg,
+                        doc_id=path,                    # use stable, future-proof param name
+                        budget=ledger,
+                        high_value=args.high_value,
+                        decision_trace=args.trace
+                    )
+                except Exception as e:
+                    log.warning("AI enrich failed on %s: %r", path, e)
+                    ai = {}
+            else:
+                log.debug("No text extracted for %s; skipping AI.", path)
 
         # Optional: print why deep ran (if ai_router returns a _decision field)
         if ai.get("_decision"):
             log.info("   deep decision: %s", ai["_decision"])
 
         # 3) WRITE (flatten key fields for CSV, store full ai/json for JSONL)
-        row: Dict[str, Any] = {
-            "run_id": run_id,
-            "path": path,
-            "filename": os.path.basename(path or ""),
-            "size_bytes": f.get("size_bytes"),
-            "sha1": f.get("sha1") or meta.get("sha1"),
-            "ext": meta.get("ext"),
-            "engine": meta.get("engine"),
-            "pages": meta.get("pages"),
-            "language": meta.get("language"),
+        if not args.dry_run:
+            fast = ai.get("ai_fast") or {}
+            deep = ai.get("ai_deep_local") or {}  # or ai_deep_cloud if you later add it
 
-            "extraction_status": extres.get("extraction_status"),
-            "skipped_reason": extres.get("skipped_reason"),
+            row: Dict[str, Any] = {
+                "run_id": run_id,
+                "path": path,
+                "filename": os.path.basename(path or ""),
+                "size_bytes": f.get("size_bytes"),
+                "sha1": f.get("sha1") or meta.get("sha1"),
+                "ext": meta.get("ext"),
+                "engine": meta.get("engine"),
+                "pages": meta.get("pages"),
+                "language": meta.get("language"),
 
-            # Flattened FAST fields (for easy CSV analytics)
-            "category": (ai.get("ai_fast") or {}).get("category"),
-            "domain": (ai.get("ai_fast") or {}).get("domain"),
-            "tags": (ai.get("ai_fast") or {}).get("tags"),
-            "contains_pii": (ai.get("ai_fast") or {}).get("contains_pii"),
-            "confidence": (ai.get("ai_fast") or {}).get("confidence"),
-            "summary": (ai.get("ai_fast") or {}).get("summary"),
+                "extraction_status": extraction_status,
+                "skipped_reason": extres.get("skipped_reason"),
 
-            # Flattened DEEP fields
-            "pii": (ai.get("ai_deep_local") or {}).get("pii"),
-            "glossary_terms": (ai.get("ai_deep_local") or {}).get("glossary_terms"),
+                # Flattened FAST fields (for easy CSV analytics)
+                "category": fast.get("category"),
+                "domain": fast.get("domain"),
+                "tags": fast.get("tags"),
+                "contains_pii": fast.get("contains_pii"),
+                "confidence": fast.get("confidence"),
+                "summary": fast.get("summary"),
 
-            # Cost (if your router tracks it)
-            "ai_cost_usd": ai.get("ai_cost_usd"),
+                # Flattened DEEP fields
+                "pii": deep.get("pii"),
+                "glossary_terms": deep.get("glossary_terms"),
 
-            # Full AI blob (handy in JSONL)
-            "ai": ai,
+                # Cost (if router tracks it)
+                "ai_cost_usd": ai.get("ai_cost_usd"),
 
-            "timestamp": now_iso(),
-        }
+                # Full AI blob (kept in JSONL)
+                "ai": ai,
 
-        writer.write_item(row)
+                "timestamp": now_iso(),
+            }
+
+            writer.write_item(row)
 
     # Finalize run
-    writer.finalize()
+    if not args.dry_run:
+        writer.finalize()
+
     dt = time.time() - t0
     log.info("Run %s completed. Files: %d, elapsed: %.2fs", run_id, processed, dt)
 
-    # Print machine-readable summary (shows per-run dir if enabled)
+    # Print machine-readable summary (shows per-run paths if enabled)
     out = {
         "run_id": run_id,
         "files": processed,

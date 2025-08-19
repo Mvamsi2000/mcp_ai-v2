@@ -44,3 +44,6 @@
 2025-08-18 21:24:37,983 INFO main: Config loaded from ./mcp_ai/config.yaml
 2025-08-18 21:24:37,984 INFO main: Run 20250818_212437_fa90362f started (profile=deep, always_deep=False, dry_run=False)
 2025-08-18 21:24:37,986 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/.DS_Store
+2025-08-18 21:46:15,707 INFO main: Config loaded from ./mcp_ai/config.yaml
+2025-08-18 21:46:15,709 INFO main: Run 20250818_214615_db017128 started (profile=deep, always_deep=False, dry_run=False)
+2025-08-18 21:46:15,710 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/.DS_Store

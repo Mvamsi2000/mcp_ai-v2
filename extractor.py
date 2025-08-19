@@ -1,255 +1,449 @@
 # mcp_ai/extractor.py
 from __future__ import annotations
-import io, logging, os
-from typing import Any, Dict, List, Optional, Tuple
 
-from .utils import ext_lower
+import io
+import os
+import time
+import logging
+import shutil
+from typing import Dict, Any, Optional, List, Tuple
+
+# Unified, robust A/V pipeline lives here
+from .av_utils import transcribe_av
 
 log = logging.getLogger("extractor")
 
-# ───────────────────────────── Public API ─────────────────────────────
+# ---------------------------
+# Capability matrix (summary)
+# ---------------------------
+# PDF:       PyMuPDF -> pdfminer -> pdfplumber -> OCR (if allowed)
+# DOCX:      docx2txt
+# PPTX:      python-pptx
+# XLSX:      openpyxl (values only)
+# TEXT-ish:  txt, csv/tsv, log, md, json, xml, html (bs4), ini/cfg, yml/yaml, mod (if policy allows)
+# IMAGES:    png, jpg/jpeg, tiff -> OCR cascade (easyocr -> tesseract -> rapidocr/paddle/azure)
+# AUDIO:     wav, mp3, m4a, aac, flac, ogg, opus -> transcribe_av
+# VIDEO:     mp4, mov, mkv, webm -> transcribe_av
+# Archives:  metadata_only here (scanner may expand upstream)
 
-def extract_content(path: str, profile: Dict[str, Any], type_policies: Dict[str, Any]) -> Dict[str, Any]:
+# Common OS/system junk (also handled by scanner)
+_SYSTEM_BASENAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
+
+_AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
+_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+
+# ---------------------------
+# Helpers
+# ---------------------------
+
+def _ok(status: str, meta: Dict[str, Any], text: str = "", skipped_reason: Optional[str] = None) -> Dict[str, Any]:
     """
-    Return a dict:
-    {
-      "extraction_status": "ok" | "skipped" | "metadata_only" | "error",
-      "skipped_reason": str|None,
-      "text": str,
-      "meta": {...}
-    }
+    Standard extractor result envelope:
+      extraction_status: "ok" | "metadata_only" | "skipped"
+      skipped_reason: str | None
+      text: extracted text/transcript/plain text
+      meta: engine details, pages, dpi, language, etc.
     """
-    try:
-        if not os.path.exists(path):
-            return _err("error", f"file not found: {path}")
-
-        size = os.path.getsize(path)
-        meta: Dict[str, Any] = {"ext": ext_lower(path), "engine": "none", "cascade": profile.get("parse_pdf_order", [])}
-
-        # Type policies
-        ext = meta["ext"]
-        tp = type_policies or {}
-        skip_exts = set((_norm_list(tp.get("skip"))) or [])
-        if ext in skip_exts:
-            return _ok("", meta, status="skipped", reason=f"type policy skip: {ext}")
-
-        # profile size gate
-        max_mb = float(profile.get("max_file_mb", 100))
-        if size > max_mb * 1024 * 1024:
-            return _ok("", meta, status="metadata_only", reason=f"file>{max_mb}MB")
-
-        prefer_ocr = set((_norm_list(tp.get("prefer_ocr"))) or [])
-        try_text_then_meta = set((_norm_list(tp.get("try_text_then_metadata_only"))) or [])
-        metadata_only = set((_norm_list(tp.get("metadata_only"))) or [])
-
-        text = ""
-        if ext in metadata_only:
-            return _ok("", meta, status="metadata_only", reason=f"policy: metadata_only for {ext}")
-
-        if ext in (".txt", ".csv", ".tsv", ".log", ".md"):
-            text = _read_text(path)
-            return _ok(text, {**meta, "engine": "text"})
-
-        if ext in (".pdf",):
-            cascade = profile.get("parse_pdf_order", ["pymupdf", "pdfminer", "pdfplumber", "ocr"])
-            text, engine = _extract_pdf(path, cascade, profile)
-            return _ok(text, {**meta, "engine": engine})
-
-        if ext in (".png", ".jpg", ".jpeg", ".tiff", ".bmp"):
-            if ext in prefer_ocr or profile.get("ocr", True):
-                txt = _ocr_image(path, profile)
-                return _ok(txt, {**meta, "engine": "ocr"})
-            return _ok("", {**meta, "engine": "none"}, status="metadata_only", reason="image no OCR by policy")
-
-        if ext in (".docx",):
-            txt = _read_docx(path)
-            return _ok(txt, {**meta, "engine": "docx"})
-
-        if ext in (".pptx",):
-            txt = _read_pptx(path, profile)
-            if not txt and ext in try_text_then_meta:
-                return _ok("", {**meta, "engine": "pptx"}, status="metadata_only", reason="empty after text")
-            return _ok(txt, {**meta, "engine": "pptx"})
-
-        if ext in (".xlsx", ".xlsm"):
-            txt = _read_xlsx(path, profile)
-            if not txt and ext in try_text_then_meta:
-                return _ok("", {**meta, "engine": "xlsx"}, status="metadata_only", reason="empty after text")
-            return _ok(txt, {**meta, "engine": "xlsx"})
-
-        # default: try reading as text; else metadata_only
-        try:
-            txt = _read_text(path)
-            if txt:
-                return _ok(txt, {**meta, "engine": "text"})
-        except Exception:
-            pass
-        return _ok("", meta, status="metadata_only", reason=f"unhandled ext {ext}")
-
-    except Exception as e:
-        log.exception("extract_content failed for %s", path)
-        return _err("error", f"{e!r}")
-
-# ───────────────────────────── Helpers ─────────────────────────────
-
-def _norm_list(v: Any) -> List[str]:
-    if not v:
-        return []
-    return [str(x).lower() for x in v]
-
-def _ok(text: str, meta: Dict[str, Any], status: str = "ok", reason: Optional[str] = None) -> Dict[str, Any]:
     return {
         "extraction_status": status,
-        "skipped_reason": reason,
-        "text": text or "",
+        "skipped_reason": skipped_reason,
+        "text": text,
         "meta": meta,
     }
 
-def _err(status: str, reason: str) -> Dict[str, Any]:
-    return {
-        "extraction_status": status,
-        "skipped_reason": reason,
-        "text": "",
-        "meta": {"engine": "none"},
-    }
+def _quick_skip(path: str, reason: str) -> Dict[str, Any]:
+    return _ok("skipped", {"ext": os.path.splitext(path)[1].lower()}, "", reason)
 
-def _read_text(path: str) -> str:
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
-
-# ───────────────────────────── PDF extractors ─────────────────────────────
-
-def _extract_pdf(path: str, cascade: List[str], profile: Dict[str, Any]) -> Tuple[str, str]:
-    last_error = None
-    for engine in cascade:
-        try:
-            if engine == "pymupdf":
-                try:
-                    import fitz  # PyMuPDF
-                except Exception:
-                    raise RuntimeError("pymupdf not available")
-                txt = []
-                with fitz.open(path) as doc:
-                    for page in doc:
-                        txt.append(page.get_text("text"))
-                t = "\n".join(txt).strip()
-                if t:
-                    return t, "pymupdf"
-            elif engine == "pdfminer":
-                try:
-                    from pdfminer.high_level import extract_text  # type: ignore
-                except Exception:
-                    raise RuntimeError("pdfminer not available")
-                t = extract_text(path) or ""
-                if t.strip():
-                    return t, "pdfminer"
-            elif engine == "pdfplumber":
-                try:
-                    import pdfplumber  # type: ignore
-                except Exception:
-                    raise RuntimeError("pdfplumber not available")
-                txt = []
-                with pdfplumber.open(path) as pdf:
-                    for page in pdf.pages:
-                        try:
-                            txt.append(page.extract_text() or "")
-                        except Exception:
-                            continue
-                t = "\n".join(txt).strip()
-                if t:
-                    return t, "pdfplumber"
-            elif engine == "ocr":
-                t = _ocr_pdf(path, profile)
-                if t.strip():
-                    return t, "ocr"
-        except Exception as e:
-            last_error = e
-            continue
-    if last_error:
-        log.warning("PDF cascade failed for %s: %r", path, last_error)
-    return "", cascade[-1] if cascade else "none"
-
-# ───────────────────────────── OCR helpers ─────────────────────────────
-
-def _ocr_pdf(path: str, profile: Dict[str, Any]) -> str:
-    # Requires: pdf2image, pytesseract, PIL
+def _size_bytes(path: str) -> int:
     try:
-        from pdf2image import convert_from_path  # type: ignore
-        from PIL import Image  # type: ignore
-        import pytesseract  # type: ignore
+        return os.path.getsize(path)
     except Exception:
-        log.warning("OCR PDF requested but dependencies missing (pdf2image/pytesseract/PIL).")
-        return ""
-    dpi = int(profile.get("ocr_dpi", 144))
-    max_pages = int(profile.get("ocr_max_pages", 10))
-    secs = int(profile.get("timebox_ocr_s", 30))
-    pages = convert_from_path(path, dpi=dpi, fmt="png")
-    out = []
-    start = time.time()
-    for i, im in enumerate(pages):
-        if i >= max_pages:
-            break
-        if time.time() - start > secs:
-            log.warning("OCR timeboxed at %ss for %s", secs, path)
-            break
+        return -1
+
+def _read_text_small(path: str, max_mb: int = 25) -> Optional[str]:
+    """Read small plaintext-like files with UTF-8→Latin-1 fallback. Returns None if too large / not text."""
+    try:
+        if _size_bytes(path) > max_mb * 1024 * 1024:
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
         try:
-            out.append(pytesseract.image_to_string(im))
+            with open(path, "r", encoding="latin-1") as f:
+                return f.read()
         except Exception:
-            continue
-    return "\n".join(out).strip()
-
-def _ocr_image(path: str, profile: Dict[str, Any]) -> str:
-    try:
-        from PIL import Image  # type: ignore
-        import pytesseract  # type: ignore
+            return None
     except Exception:
-        log.warning("OCR image requested but PIL/pytesseract missing.")
-        return ""
+        return None
+
+def _has_tool(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+# ---------------------------
+# PDF extraction cascade
+# ---------------------------
+
+def _extract_pdf_text(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Try PDF text extract via configured cascade:
+      pymupdf -> pdfminer -> pdfplumber -> OCR (if profile.ocr true)
+    """
+    cascade = list((profile.get("parse_pdf_order") or ["pymupdf", "pdfminer", "pdfplumber", "ocr"]))
+    meta: Dict[str, Any] = {"ext": ".pdf", "engine": "none", "cascade": cascade}
+    text = ""
+
+    # 1) PyMuPDF
+    if "pymupdf" in cascade:
+        try:
+            import fitz  # type: ignore
+            t0 = time.time()
+            doc = fitz.open(path)
+            pages = doc.page_count
+            parts = []
+            for i in range(pages):
+                parts.append(doc.load_page(i).get_text())
+            text = "\n".join(parts)
+            meta.update({"engine": "pymupdf", "pages": pages, "elapsed_s": round(time.time()-t0,3)})
+            if text.strip():
+                return _ok("ok", meta, text)
+        except Exception as e:
+            log.debug("pymupdf failed on %s: %r", path, e)
+
+    # 2) pdfminer
+    if "pdfminer" in cascade:
+        try:
+            t0 = time.time()
+            from pdfminer.high_level import extract_text as pdfminer_extract_text  # type: ignore
+            text = pdfminer_extract_text(path) or ""
+            meta.update({"engine": "pdfminer", "elapsed_s": round(time.time()-t0,3)})
+            if text.strip():
+                return _ok("ok", meta, text)
+        except Exception as e:
+            log.debug("pdfminer failed on %s: %r", path, e)
+
+    # 3) pdfplumber
+    if "pdfplumber" in cascade:
+        try:
+            import pdfplumber  # type: ignore
+            t0 = time.time()
+            parts = []
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    parts.append(page.extract_text() or "")
+            text = "\n".join([p for p in parts if p])
+            meta.update({"engine": "pdfplumber", "elapsed_s": round(time.time()-t0,3)})
+            if text.strip():
+                return _ok("ok", meta, text)
+        except Exception as e:
+            log.debug("pdfplumber failed on %s: %r", path, e)
+
+    # 4) OCR (if allowed)
+    if "ocr" in cascade and profile.get("ocr"):
+        ocr_max_pages = int(profile.get("ocr_max_pages", 10))
+        return _extract_pdf_ocr(path, profile, meta_base=meta, max_pages=ocr_max_pages)
+
+    # No crash; just no text
+    return _ok("ok", meta, "")
+
+def _extract_pdf_ocr(path: str, profile: Dict[str, Any], meta_base: Dict[str, Any], max_pages: int) -> Dict[str, Any]:
+    """
+    Render each page to an image (via PyMuPDF) and OCR by the image OCR cascade.
+    Timeboxed by profile['timebox_ocr_s'].
+    """
     try:
-        im = Image.open(path)
-        return pytesseract.image_to_string(im)
+        import fitz  # type: ignore
     except Exception:
-        return ""
+        return _ok("metadata_only", dict(meta_base, engine="ocr"), "", "pymupdf not available for OCR")
 
-# ───────────────────────────── Office formats ─────────────────────────────
+    lang = profile.get("ocr_lang", "eng")
+    dpi = int(profile.get("ocr_dpi", 144))
+    engines = list(profile.get("ocr_engine_order") or ["easyocr", "tesseract", "rapidocr", "paddle", "azure"])
+    timebox_s = int(profile.get("timebox_ocr_s", 45))
 
-def _read_docx(path: str) -> str:
+    t0_all = time.time()
+    text_parts: List[str] = []
+    pages_ocrd = 0
+
+    try:
+        doc = fitz.open(path)
+        pages = min(doc.page_count, max_pages)
+    except Exception as e:
+        log.debug("pymupdf open for OCR failed on %s: %r", path, e)
+        return _ok("metadata_only", dict(meta_base, engine="ocr"), "", "pymupdf open failed")
+
+    for i in range(pages):
+        if time.time() - t0_all > timebox_s:
+            break
+        try:
+            page = doc.load_page(i)
+            pix = page.get_pixmap(dpi=dpi)
+            img_bytes = pix.tobytes("png")
+            t_text, engine_used = _ocr_bytes(img_bytes, engines, lang, timebox_s=max(5, timebox_s//2))
+            if t_text:
+                text_parts.append(t_text)
+            pages_ocrd += 1
+        except Exception as e:
+            log.debug("OCR page %s failed: %r", i, e)
+
+    meta = dict(meta_base)
+    meta.update({
+        "engine": "ocr",
+        "ocr_pages": pages_ocrd,
+        "dpi": dpi,
+        "lang": lang,
+        "elapsed_s": round(time.time() - t0_all, 3),
+        "ocr_engine_order": engines,
+    })
+    return _ok("ok", meta, "\n".join(text_parts))
+
+# ---------------------------
+# Image OCR cascade
+# ---------------------------
+
+def _ocr_bytes(img_bytes: bytes, engines: List[str], lang: str, timebox_s: int = 30) -> Tuple[str, str]:
+    """
+    Try engines in order; return (text, engine_used_or_reason).
+    """
+    t0 = time.time()
+
+    # EASYOCR
+    if "easyocr" in engines:
+        try:
+            import easyocr  # type: ignore
+            reader = easyocr.Reader([lang], gpu=False)
+            res = reader.readtext(img_bytes, detail=0)
+            text = "\n".join([r for r in res if r])
+            if text.strip():
+                return text, "easyocr"
+        except Exception as e:
+            log.debug("easyocr failed: %r", e)
+        if time.time() - t0 > timebox_s:
+            return "", "easyocr-timeout"
+
+    # TESSERACT
+    if "tesseract" in engines:
+        try:
+            from PIL import Image  # type: ignore
+            import pytesseract  # type: ignore
+            img = Image.open(io.BytesIO(img_bytes))
+            text = pytesseract.image_to_string(img, lang=lang)
+            if text.strip():
+                return text, "tesseract"
+        except Exception as e:
+            log.debug("tesseract failed: %r", e)
+        if time.time() - t0 > timebox_s:
+            return "", "tesseract-timeout"
+
+    # RAPIDOCR (optional)
+    if "rapidocr" in engines:
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # type: ignore
+            ocr = RapidOCR()
+            res, _ = ocr(io.BytesIO(img_bytes))
+            text = "\n".join([x[1] for x in (res or []) if x and len(x) > 1])
+            if text.strip():
+                return text, "rapidocr"
+        except Exception as e:
+            log.debug("rapidocr failed: %r", e)
+
+    # PADDLE (optional placeholder)
+    if "paddle" in engines:
+        try:
+            # If you wire PaddleOCR, add it here.
+            pass
+        except Exception as e:
+            log.debug("paddle failed: %r", e)
+
+    # AZURE (disabled for local-only; the router would call cloud if allowed)
+    if "azure" in engines:
+        return "", "azure-disabled"
+
+    return "", "none"
+
+# ---------------------------
+# Office/markup handlers
+# ---------------------------
+
+def _extract_docx(path: str) -> Dict[str, Any]:
     try:
         import docx2txt  # type: ignore
-        return docx2txt.process(path) or ""
-    except Exception:
-        # very small fallback
-        return ""
+        t0 = time.time()
+        txt = docx2txt.process(path) or ""
+        return _ok("ok", {"ext": ".docx", "engine": "docx2txt", "elapsed_s": round(time.time()-t0,3)}, txt)
+    except Exception as e:
+        log.debug("docx2txt failed on %s: %r", path, e)
+        return _ok("metadata_only", {"ext": ".docx", "engine": "none"}, "", "docx2txt not available or failed")
 
-def _read_pptx(path: str, profile: Dict[str, Any]) -> str:
+def _extract_pptx(path: str) -> Dict[str, Any]:
     try:
         from pptx import Presentation  # type: ignore
-    except Exception:
-        return ""
-    txt = []
-    try:
+        t0 = time.time()
         prs = Presentation(path)
+        parts = []
         for slide in prs.slides:
             for shape in slide.shapes:
-                if hasattr(shape, "text"):
-                    txt.append(shape.text)
-    except Exception:
-        pass
-    return "\n".join(txt).strip()
+                if hasattr(shape, "text") and shape.text:
+                    parts.append(shape.text)
+        return _ok("ok", {"ext": ".pptx", "engine": "python-pptx", "elapsed_s": round(time.time()-t0,3)}, "\n".join(parts))
+    except Exception as e:
+        log.debug("python-pptx failed on %s: %r", path, e)
+        return _ok("metadata_only", {"ext": ".pptx", "engine": "none"}, "", "python-pptx not available or failed")
 
-def _read_xlsx(path: str, profile: Dict[str, Any]) -> str:
+def _extract_xlsx(path: str) -> Dict[str, Any]:
     try:
-        import openpyxl  # type: ignore
-    except Exception:
-        return ""
-    out: List[str] = []
-    try:
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        from openpyxl import load_workbook  # type: ignore
+        t0 = time.time()
+        wb = load_workbook(path, read_only=True, data_only=True)
+        parts = []
         for ws in wb.worksheets:
             for row in ws.iter_rows(values_only=True):
-                vals = [str(c) if c is not None else "" for c in row]
-                if any(vals):
-                    out.append("\t".join(vals))
+                vals = [str(v) for v in row if v is not None]
+                if vals:
+                    parts.append(", ".join(vals))
+        return _ok("ok", {"ext": ".xlsx", "engine": "openpyxl", "elapsed_s": round(time.time()-t0,3)}, "\n".join(parts))
+    except Exception as e:
+        log.debug("openpyxl failed on %s: %r", path, e)
+        return _ok("metadata_only", {"ext": ".xlsx", "engine": "none"}, "", "openpyxl not available or failed")
+
+def _extract_html(path: str) -> Dict[str, Any]:
+    # Prefer BeautifulSoup if available
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+        t0 = time.time()
+        html = _read_text_small(path, max_mb=10) or ""
+        soup = BeautifulSoup(html, "html.parser")
+        txt = soup.get_text("\n")
+        return _ok("ok", {"ext": ".html", "engine": "bs4", "elapsed_s": round(time.time()-t0,3)}, txt)
     except Exception:
-        pass
-    return "\n".join(out).strip()
+        txt = _read_text_small(path, max_mb=10)
+        if txt is not None:
+            return _ok("ok", {"ext": ".html", "engine": "text"}, txt)
+        return _ok("metadata_only", {"ext": ".html", "engine": "none"}, "", "html too large or bs4 not available")
+
+# ---------------------------
+# Image handler (+EXIF)
+# ---------------------------
+
+def _extract_image(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+    lang = profile.get("ocr_lang", "eng")
+    engines = list(profile.get("ocr_engine_order") or ["easyocr", "tesseract", "rapidocr", "paddle", "azure"])
+    timebox_s = int(profile.get("timebox_ocr_s", 45))
+    collect_exif = bool(profile.get("collect_exif", False))
+
+    meta: Dict[str, Any] = {"ext": os.path.splitext(path)[1].lower(), "engine": "image", "ocr_engine_order": engines}
+    exif: Dict[str, Any] = {}
+
+    img_bytes = None
+    try:
+        with open(path, "rb") as f:
+            img_bytes = f.read()
+    except Exception as e:
+        log.debug("image read failed: %r", e)
+        return _ok("metadata_only", meta, "", "image read failed")
+
+    # OCR (if profile.ocr true)
+    text = ""
+    if profile.get("ocr"):
+        t_text, used = _ocr_bytes(img_bytes, engines, lang, timebox_s=timebox_s)
+        text = t_text
+        meta["engine"] = used
+
+    # EXIF
+    if collect_exif:
+        try:
+            from PIL import Image, ExifTags  # type: ignore
+            im = Image.open(io.BytesIO(img_bytes))
+            raw = getattr(im, "_getexif", lambda: None)() or {}
+            inv = {v: k for k, v in ExifTags.TAGS.items()}
+            wanted = ["DateTimeOriginal", "Model", "Make", "Orientation", "XResolution", "YResolution"]
+            for k, v in (raw.items() if isinstance(raw, dict) else []):
+                tag = ExifTags.TAGS.get(k) or inv.get(k) or str(k)
+                if tag in wanted:
+                    exif[tag] = v
+            if exif:
+                meta["exif"] = exif
+        except Exception as e:
+            log.debug("exif read failed: %r", e)
+
+    return _ok("ok", meta, text)
+
+# ---------------------------
+# Main dispatch
+# ---------------------------
+
+def extract_content(
+    path: str,
+    profile: Dict[str, Any],
+    type_policies: Dict[str, Any],
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Unified dispatcher. cfg is optional (kept for backward compatibility).
+    If provided, A/V will use ASR settings from cfg.ai.local.faster_whisper.
+    """
+    base = os.path.basename(path)
+    if base in _SYSTEM_BASENAMES:
+        return _quick_skip(path, "system file")
+
+    ext = os.path.splitext(path)[1].lower()
+
+    # 0) Hard skip types (policy)
+    for s in (type_policies.get("skip") or []):
+        if ext == s.lower():
+            return _quick_skip(path, f"skip policy for {ext}")
+
+    # 0.5) Metadata-only (policy)
+    for s in (type_policies.get("metadata_only") or []):
+        if ext == s.lower():
+            return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", f"policy: metadata_only for {ext}")
+
+    # 1) PDFs
+    if ext == ".pdf":
+        return _extract_pdf_text(path, profile)
+
+    # 2) Images (with optional OCR + EXIF)
+    if ext in _IMAGE_EXTS:
+        return _extract_image(path, profile)
+
+    # 3) Audio/Video → single, robust path (transcribe_av)
+    if ext in _AUDIO_EXTS or ext in _VIDEO_EXTS:
+        try:
+            # cfg may be None; transcribe_av handles defaults internally
+            return transcribe_av(path, profile, cfg or {})
+        except Exception as e:
+            log.warning("transcribe_av failed on %s: %r", path, e)
+            return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", "transcribe_av failed")
+
+    # 4) Office + structured
+    if ext == ".docx":
+        return _extract_docx(path)
+    if ext == ".pptx":
+        return _extract_pptx(path)
+    if ext == ".xlsx":
+        return _extract_xlsx(path)
+    if ext in (".html", ".htm"):
+        return _extract_html(path)
+
+    # 5) Plaintext-ish (incl. .mod if NOT policy-blocked)
+    if ext in (".txt", ".csv", ".tsv", ".log", ".md", ".json", ".xml", ".ini", ".cfg", ".yml", ".yaml", ".mod"):
+        # If policy says metadata_only for this ext, honor it
+        if ext in [e.lower() for e in (type_policies.get("metadata_only") or [])]:
+            return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", f"policy: metadata_only for {ext}")
+
+        txt = _read_text_small(path, max_mb=25)
+        if txt is not None:
+            return _ok("ok", {"ext": ext, "engine": "text"}, txt)
+
+        # try_text_then_metadata_only fallback (e.g., very large .json/.log)
+        if ext in [e.lower() for e in (type_policies.get("try_text_then_metadata_only") or [])]:
+            return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", "policy: try_text_then_metadata_only → metadata_only")
+        return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", "too large for plaintext ingest")
+
+    # 6) Archives - prefer upstream expansion. Provide metadata_only here.
+    if ext in (".zip", ".tar", ".gz", ".tgz", ".rar", ".7z"):
+        return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", "archive container (expand upstream)")
+
+    # 7) Metadata-only fallback (unknown type)
+    meta = {"ext": ext, "engine": "none"}
+    return _ok("metadata_only", meta, "", "unknown type")
