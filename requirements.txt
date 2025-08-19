@@ -1,0 +1,55 @@
+#############################################
+# MCP-AI v2 – requirements.txt
+# Tip (macOS):
+#   brew install tesseract
+#   brew install libmagic        # provides 'file' / libmagic for python-magic
+# (optional) for faster-whisper: brew install ffmpeg
+#############################################
+
+# ----- Core runtime -----
+pyyaml>=6.0.1
+requests>=2.31.0
+tqdm>=4.66.0
+pandas>=2.1.0
+numpy>=1.25.0
+
+# ----- Dashboard & charts -----
+streamlit>=1.36.0
+plotly>=5.18.0
+sqlite-utils>=3.36
+
+# ----- Text & document extraction -----
+python-magic>=0.4.27          # needs libmagic (see macOS tip above)
+pymupdf>=1.23.0               # PDF (primary extractor)
+pdfminer.six>=20221105        # PDF fallback text extractor
+python-docx>=0.8.11           # DOCX
+python-pptx>=0.6.21           # PPTX
+openpyxl>=3.1.0               # XLSX
+beautifulsoup4>=4.12.2        # HTML
+html2text>=2020.1.16
+Pillow>=10.0.0                # images
+langdetect>=1.0.9             # language detection (lightweight)
+
+# ----- OCR (local engines) -----
+pytesseract>=0.3.10           # requires tesseract installed (brew install tesseract)
+#easyocr>=1.7.1               # OPTIONAL (pulls PyTorch; comment in if you want it)
+#rapidocr-onnxruntime>=1.3.23 # OPTIONAL (fast CPU OCR)
+#paddleocr>=2.7.0             # OPTIONAL (full-featured OCR; heavier)
+
+# ----- Audio/Video transcription (optional) -----
+#faster-whisper>=1.0.0        # OPTIONAL (fast CPU/GPU; needs ffmpeg)
+#openai-whisper>=20231117     # OPTIONAL (heavier; needs ffmpeg)
+
+# ----- Vector / RAG (optional, used by mini-AI & future features) -----
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.2
+
+# ----- Azure OCR / Cloud hooks (only used if enabled in config) -----
+#azure-ai-formrecognizer>=3.3.0
+#azure-core>=1.29.0
+#azure-storage-blob>=12.19.0
+#azure-ai-textanalytics>=5.3.0
+
+# ----- OpenAI client (works for Azure OpenAI too) -----
+openai>=1.30.0
+networkx>=3.2

@@ -1,0 +1,10 @@
+{
+  "confidence": 0.91,
+  "pii": [
+    "email",
+    "phone"
+  ],
+  "glossary_terms": [
+    "Termination Clause"
+  ]
+}

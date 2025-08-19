@@ -1,0 +1,46 @@
+# config.cloud.yaml — point to staged files and use cloud model
+scan_profile: deep
+
+paths:
+  roots:
+    - "./cloud_staging"
+
+profiles:
+  deep:
+    text_extract: true
+    ocr: true
+    expand_archives: true
+    include_types: ["*"]
+    max_file_mb: 500
+    timebox_ocr_s: 30
+    parse_pdf_order: ["pymupdf","pdfminer","ocr"]
+    ocr_engine_order: ["easyocr","tesseract","rapidocr","paddle","azure"]
+    ocr_max_pages: 8
+    ocr_dpi: 144
+
+ai:
+  mode: cloud
+  provider: azure
+  deep:
+    sampling: smart
+    max_chars_fast: 6000
+    max_chars_local: 120000
+  cloud:
+    provider: "azure"
+    endpoint: "https://YOUR-RESOURCE.openai.azure.com"
+    api_version: "2024-08-01-preview"
+    deployment_fast: "gpt-4o-mini"
+    deployment_deep: "gpt-4o"
+    timeout_s: 30
+    pricing:
+      fast_input_per_1k: 0.0005
+      fast_output_per_1k: 0.0015
+      deep_input_per_1k: 0.0030
+      deep_output_per_1k: 0.0060
+
+storage:
+  out_root: "./mcp_ai/output_files"
+  per_run_outputs: true
+
+safety:
+  allow_outbound_network: true

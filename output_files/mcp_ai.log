@@ -1,0 +1,46 @@
+2025-08-18 00:20:16,660 INFO main: Run 7a32eb01-f5a4-46fe-b1ac-ba66fbb1b912 started (profile=deep)
+2025-08-18 00:20:16,665 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf
+2025-08-18 00:21:15,464 INFO main: → [2] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf
+2025-08-18 00:22:05,174 INFO main: → [3] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf
+2025-08-18 00:22:57,217 INFO main: → [4] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf
+2025-08-18 00:23:48,940 INFO main: → [5] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf
+2025-08-18 00:24:43,529 INFO main: Run 7a32eb01-f5a4-46fe-b1ac-ba66fbb1b912 completed. Files: 5, elapsed: 266.87s
+2025-08-18 00:31:23,177 INFO main: Run 08a03f63-2d34-49bc-b024-d19429a5d1ed started (profile=deep)
+2025-08-18 00:31:23,182 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf
+2025-08-18 00:32:13,708 INFO main: → [2] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf
+2025-08-18 00:33:04,033 INFO main: → [3] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf
+2025-08-18 00:33:56,507 INFO main: → [4] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf
+2025-08-18 00:34:43,242 INFO main: → [5] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf
+2025-08-18 00:35:33,547 INFO main: Run 08a03f63-2d34-49bc-b024-d19429a5d1ed completed. Files: 5, elapsed: 250.37s
+2025-08-18 00:56:09,701 INFO main: Config loaded from ./mcp_ai/config.yaml
+2025-08-18 00:56:09,703 INFO main: Run 20250818_005609_8a3087c0 started (profile=deep, always_deep=False, dry_run=False)
+2025-08-18 00:56:09,707 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf
+2025-08-18 00:56:10,177 WARNING main: AI enrich failed on /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf: TypeError("ai_enrich() got an unexpected keyword argument 'doc_id'")
+2025-08-18 00:56:10,180 INFO main: → [2] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf
+2025-08-18 00:56:10,182 WARNING main: AI enrich failed on /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf: TypeError("ai_enrich() got an unexpected keyword argument 'doc_id'")
+2025-08-18 00:56:10,185 INFO main: → [3] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf
+2025-08-18 00:56:10,187 WARNING main: AI enrich failed on /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf: TypeError("ai_enrich() got an unexpected keyword argument 'doc_id'")
+2025-08-18 00:56:10,191 INFO main: → [4] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf
+2025-08-18 00:56:10,194 WARNING main: AI enrich failed on /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf: TypeError("ai_enrich() got an unexpected keyword argument 'doc_id'")
+2025-08-18 00:56:10,197 INFO main: → [5] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf
+2025-08-18 00:56:10,200 WARNING main: AI enrich failed on /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf: TypeError("ai_enrich() got an unexpected keyword argument 'doc_id'")
+2025-08-18 00:56:10,205 INFO main: Run 20250818_005609_8a3087c0 completed. Files: 5, elapsed: 0.50s
+2025-08-18 01:09:23,703 INFO main: Config loaded from ./mcp_ai/config.yaml
+2025-08-18 01:09:23,705 INFO main: Run 20250818_010923_02c27dce started (profile=deep, always_deep=False, dry_run=False)
+2025-08-18 01:09:23,707 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf
+2025-08-18 01:10:10,576 INFO main:    deep decision: {'doc_id': '/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf', 'policy': 'auto', 'triggers': {'low_confidence_below': 0.75, 'contains_pii': True, 'high_value_flag': True}, 'fast_confidence': 0.9, 'fast_contains_pii': True, 'run_deep': True, 'reason': 'auto: contains_pii', 'sampling': 'smart'}
+2025-08-18 01:10:10,595 INFO main: → [2] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf
+2025-08-18 01:11:00,933 INFO main:    deep decision: {'doc_id': '/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10274.pdf', 'policy': 'auto', 'triggers': {'low_confidence_below': 0.75, 'contains_pii': True, 'high_value_flag': True}, 'fast_confidence': 0.95, 'fast_contains_pii': True, 'run_deep': True, 'reason': 'auto: contains_pii', 'sampling': 'smart'}
+2025-08-18 01:11:00,945 INFO main: → [3] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf
+2025-08-18 01:11:52,454 INFO main:    deep decision: {'doc_id': '/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10512.pdf', 'policy': 'auto', 'triggers': {'low_confidence_below': 0.75, 'contains_pii': True, 'high_value_flag': True}, 'fast_confidence': 0.95, 'fast_contains_pii': True, 'run_deep': True, 'reason': 'auto: contains_pii', 'sampling': 'smart'}
+2025-08-18 01:11:52,469 INFO main: → [4] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf
+2025-08-18 01:12:43,821 INFO main:    deep decision: {'doc_id': '/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10506.pdf', 'policy': 'auto', 'triggers': {'low_confidence_below': 0.75, 'contains_pii': True, 'high_value_flag': True}, 'fast_confidence': 0.95, 'fast_contains_pii': True, 'run_deep': True, 'reason': 'auto: contains_pii', 'sampling': 'smart'}
+2025-08-18 01:12:43,837 INFO main: → [5] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf
+2025-08-18 01:13:41,646 INFO main:    deep decision: {'doc_id': '/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10260.pdf', 'policy': 'auto', 'triggers': {'low_confidence_below': 0.75, 'contains_pii': True, 'high_value_flag': True}, 'fast_confidence': 0.95, 'fast_contains_pii': True, 'run_deep': True, 'reason': 'auto: contains_pii', 'sampling': 'smart'}
+2025-08-18 01:13:41,667 INFO main: Run 20250818_010923_02c27dce completed. Files: 5, elapsed: 257.96s
+2025-08-18 21:18:31,409 INFO main: Config loaded from ./mcp_ai/config.yaml
+2025-08-18 21:18:31,412 INFO main: Run 20250818_211831_61408e3f started (profile=deep, always_deep=False, dry_run=False)
+2025-08-18 21:18:31,416 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Screenshots.zip
+2025-08-18 21:24:37,983 INFO main: Config loaded from ./mcp_ai/config.yaml
+2025-08-18 21:24:37,984 INFO main: Run 20250818_212437_fa90362f started (profile=deep, always_deep=False, dry_run=False)
+2025-08-18 21:24:37,986 INFO main: → [1] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/.DS_Store

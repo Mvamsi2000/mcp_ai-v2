@@ -1,0 +1,2 @@
+run_id,path,filename,ext,file_type,size_bytes,created,last_modified,last_accessed,sha1,extraction_status,skipped_reason
+af80d57b-4b82-4aa2-b844-5f886f08347b,/Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Company dataset - pdfs/CompanyDocuments/invoices/invoice_10248.pdf,invoice_10248.pdf,.pdf,application/pdf,2052,2024-05-23T12:43:08+00:00,2024-05-23T12:43:08+00:00,2025-08-17T08:52:39.541927+00:00,3926299043221aec1b9681218ac6658d45e2d428,ok,

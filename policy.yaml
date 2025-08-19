@@ -1,0 +1,11 @@
+# policy.yaml — client-tunable cloud routing rules
+min_confidence_for_cloud: 0.70
+allow_domains: [legal, finance, hr]
+require_pii_for_cloud: false         # set true to only escalate if PII is detected
+max_cloud_docs: 2000                 # soft cap (enforced by your review/approval)
+max_total_cloud_cost_usd: 100.0      # budget guard, for dashboards later
+extensions_considered: [".pdf",".docx",".pptx",".xlsx",".txt",".html"]
+min_summary_len_for_skip: 240        # if local deep summary is already good, skip cloud
+size_mb_max_for_cloud: 200           # avoid huge uploads unless explicitly approved
+pii_triggers: ["email","phone","ssn","credit_card"]
+path_hints: ["/contracts/", "/legal/", "/invoice", "/finance/"]
