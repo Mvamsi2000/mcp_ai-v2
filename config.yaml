@@ -107,7 +107,7 @@ ai:
 
     # Auto-triggers (used when policy=auto)
     auto_triggers:
-      low_confidence_below: 0.75 # if FAST confidence < threshold → DEEP
+      low_confidence_below: 0.90 # if FAST confidence < threshold → DEEP
       contains_pii: true         # if FAST flags PII → DEEP
       high_value_flag: true      # allow caller to force DEEP on specific docs
 
