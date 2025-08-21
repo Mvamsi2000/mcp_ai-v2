@@ -1,0 +1,30 @@
+/* mcp_ai/mcp_streamlit/styles.css */
+:root {
+    --brand: #1f6feb;
+    --bg: #0b1220;
+    --panel: #0f172a;
+    --muted: #94a3b8;
+  }
+  
+  .main { background: var(--bg); }
+  .block-container { padding-top: 0.75rem; }
+  
+  h1, h2, h3, h4, h5 { color: #e2e8f0 !important; }
+  p, span, div, label { color: #cbd5e1; }
+  
+  .metric-card {
+    background: linear-gradient(180deg, rgba(31,111,235,0.12), rgba(31,111,235,0.03));
+    border: 1px solid rgba(148,163,184,0.2);
+    border-radius: 16px;
+    padding: 14px 16px;
+    box-shadow: 0 10px 20px rgba(2,6,23,0.25);
+  }
+  
+  .kbd {
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    padding: 0 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #cbd5e1;
+  }
