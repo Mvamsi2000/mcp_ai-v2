@@ -1,148 +1,186 @@
 # mcp_ai/mcp_streamlit/ai.py
 from __future__ import annotations
-import os, hashlib, math
-from typing import List, Dict, Any, Optional, Tuple
+import json, math
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
 import numpy as np
-import httpx
 
+# httpx is optional at import time; used if present.
 try:
-    from openai import OpenAI  # optional
+    import httpx  # type: ignore
 except Exception:
-    OpenAI = None  # type: ignore
+    httpx = None  # type: ignore
 
-def _norm(v: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(v) + 1e-12
-    return v / n
+# ---------------------- Embeddings ----------------------
 
-def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(_norm(a), _norm(b)))
+def _hash_embed(text: str, dim: int = 768) -> np.ndarray:
+    """
+    Fast fallback embedding: deterministic hashed bag-of-words -> R^dim.
+    Not SOTA, but good enough if Ollama/OpenAI are unavailable.
+    """
+    vec = np.zeros(dim, dtype=np.float32)
+    for tok in text.lower().split():
+        h = hash(tok) % dim
+        vec[h] += 1.0
+    n = np.linalg.norm(vec)
+    if n > 0:
+        vec /= n
+    return vec
 
-# -------------------- Embeddings --------------------
+async def _ollama_embed_batch(
+    texts: Sequence[str], model: str, url: str
+) -> List[np.ndarray]:
+    if httpx is None:
+        return [_hash_embed(t) for t in texts]
+    out: List[np.ndarray] = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        for t in texts:
+            try:
+                r = await client.post(
+                    f"{url.rstrip('/')}/api/embeddings",
+                    json={"model": model, "prompt": t},
+                )
+                r.raise_for_status()
+                data = r.json()
+                emb = np.array(data.get("embedding") or data.get("data") or [], dtype=np.float32)
+                if emb.size == 0:
+                    emb = _hash_embed(t)
+                out.append(emb.astype(np.float32))
+            except Exception:
+                out.append(_hash_embed(t))
+    return out
+
+async def _openai_embed_batch(
+    texts: Sequence[str], api_key: str, model: str
+) -> List[np.ndarray]:
+    if httpx is None:
+        return [_hash_embed(t) for t in texts]
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            r = await client.post(
+                "https://api.openai.com/v1/embeddings",
+                headers=headers,
+                json={"model": model, "input": list(texts)},
+            )
+            r.raise_for_status()
+            data = r.json()
+            arrs = [np.array(row["embedding"], dtype=np.float32) for row in data.get("data", [])]
+            if len(arrs) == len(texts):
+                return arrs
+        except Exception:
+            pass
+    return [_hash_embed(t) for t in texts]
 
 async def embed_texts(
-    texts: List[str],
+    texts: Sequence[str],
     *,
     use_ollama: bool,
     ollama_url: str,
     ollama_model: str,
     use_cloud: bool,
     cloud_provider: str,
-    openai_api_key: Optional[str],
+    openai_api_key: str | None,
     openai_embed_model: str,
-) -> np.ndarray:
-    """
-    Returns 2D numpy array [n, d] embeddings.
-    Prefers Ollama (local). If unavailable and cloud enabled, use OpenAI.
-    If neither works, falls back to a deterministic hash-embedding baseline.
-    """
+) -> List[np.ndarray]:
+    texts = [t if isinstance(t, str) else "" for t in texts]
+    if use_cloud and cloud_provider == "openai" and openai_api_key:
+        return await _openai_embed_batch(texts, openai_api_key, openai_embed_model)
     if use_ollama:
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(
-                    f"{ollama_url.rstrip('/')}/api/embeddings",
-                    json={"model": ollama_model, "prompt": "\n\n".join(texts)},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Ollama returns a single embedding for the whole prompt; we want per-chunk.
-                    # So do it per-text if n>1:
-                    if len(texts) == 1:
-                        vec = np.array(data.get("embedding") or [], dtype=np.float32)
-                        return vec.reshape(1, -1)
-                    vecs: List[np.ndarray] = []
-                    for t in texts:
-                        r = await client.post(
-                            f"{ollama_url.rstrip('/')}/api/embeddings",
-                            json={"model": ollama_model, "prompt": t},
-                        )
-                        e = (r.json() if r.status_code == 200 else {}).get("embedding") or []
-                        vecs.append(np.array(e, dtype=np.float32))
-                    return np.vstack(vecs) if vecs else _hash_embed_batch(texts)
-        except Exception:
-            pass
+        return await _ollama_embed_batch(texts, ollama_model, ollama_url)
+    # last resort
+    return [_hash_embed(t) for t in texts]
 
-    if use_cloud and cloud_provider == "openai" and openai_api_key and OpenAI is not None:
-        try:
-            client = OpenAI(api_key=openai_api_key)
-            # OpenAI v1 embeddings are batched; we make a single call
-            resp = client.embeddings.create(model=openai_embed_model, input=texts)  # type: ignore
-            vecs = [np.array(r.embedding, dtype=np.float32) for r in resp.data]  # type: ignore
-            return np.vstack(vecs)
-        except Exception:
-            pass
+# ---------------------- Chat / QA ----------------------
 
-    # Deterministic hash fallback — always works (lower quality but robust).
-    return _hash_embed_batch(texts)
+async def _ollama_chat(
+    system: str, user: str, *, url: str, model: str
+) -> str:
+    if httpx is None:
+        return _extractive_fallback_answer(user)
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(f"{url.rstrip('/')}/api/chat", json=payload)
+            r.raise_for_status()
+            data = r.json()
+            # Ollama returns {"message": {"content": "..."}}
+            msg = (data.get("message") or {}).get("content")
+            if isinstance(msg, str) and msg.strip():
+                return msg
+    except Exception:
+        pass
+    return _extractive_fallback_answer(user)
 
-def _hash_embed_batch(texts: List[str], dim: int = 384) -> np.ndarray:
-    mat = []
-    for t in texts:
-        h = hashlib.sha256((t or "").encode("utf-8", errors="ignore")).digest()
-        rnd = np.frombuffer(h, dtype=np.uint8).astype(np.float32)
-        # tile to desired dim and add small bag-of-words term
-        base = np.tile(rnd, int(math.ceil(dim / rnd.shape[0])))[:dim]
-        bonus = np.zeros(dim, dtype=np.float32)
-        for tok in (t or "").split():
-            bonus[hash(tok) % dim] += 1.0
-        mat.append(_norm(base + 0.01 * bonus))
-    return np.vstack(mat)
+async def _openai_chat(
+    system: str, user: str, *, api_key: str, model: str
+) -> str:
+    if httpx is None:
+        return _extractive_fallback_answer(user)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {"model": model, "temperature": 0.2,
+               "messages": [{"role": "system", "content": system},
+                            {"role": "user", "content": user}]}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post("https://api.openai.com/v1/chat/completions",
+                                  headers=headers, json=payload)
+            r.raise_for_status()
+            j = r.json()
+            txt = j.get("choices", [{}])[0].get("message", {}).get("content")
+            if isinstance(txt, str) and txt.strip():
+                return txt
+    except Exception:
+        pass
+    return _extractive_fallback_answer(user)
 
-# -------------------- Chat / Generate --------------------
+def _extractive_fallback_answer(prompt: str) -> str:
+    return (
+        "Local LLM not reachable and no cloud key configured.\n"
+        "Here’s a best-effort summary from retrieved snippets:\n\n"
+        "(Provide high-level answer, then cite the [document names] used.)"
+    )
+
+def _render_context_block(docs: Sequence[Tuple[str, str]]) -> str:
+    # Keep within ~8–12k chars to avoid blowing up small local models
+    max_chars = 12000
+    parts: List[str] = []
+    used = 0
+    for name, text in docs:
+        chunk = f"[{name}]\n{text}\n---\n"
+        if used + len(chunk) > max_chars:
+            break
+        parts.append(chunk)
+        used += len(chunk)
+    return "".join(parts)
 
 async def chat_answer(
     question: str,
     *,
     system: str,
-    docs: List[Tuple[str, str]] | None,  # [(doc_id, snippet)]
+    docs: Sequence[Tuple[str, str]],
     use_ollama: bool,
     ollama_url: str,
     ollama_model: str,
     use_cloud: bool,
     cloud_provider: str,
-    openai_api_key: Optional[str],
+    openai_api_key: str | None,
     openai_model: str,
 ) -> str:
-    context = ""
-    if docs:
-        # Keep prompt compact for small models
-        ctx_parts = [f"[{i+1}] {doc_id}\n{snippet}" for i, (doc_id, snippet) in enumerate(docs[:8])]
-        context = "\n\n".join(ctx_parts)
-
+    context = _render_context_block(docs)
+    user = (
+        "Answer the question using ONLY the context below. "
+        "Cite sources inline using [document names]. If unsure, say so.\n\n"
+        f"Context:\n{context}\n"
+        f"Question: {question}"
+    )
+    if use_cloud and cloud_provider == "openai" and openai_api_key:
+        return await _openai_chat(system, user, api_key=openai_api_key, model=openai_model)
     if use_ollama:
-        try:
-            payload = {
-                "model": ollama_model,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
-                ],
-            }
-            async with httpx.AsyncClient(timeout=120) as client:
-                r = await client.post(f"{ollama_url.rstrip('/')}/api/chat", json=payload)
-                if r.status_code == 200:
-                    j = r.json()
-                    # Newer Ollama returns {message:{content:"..."}}
-                    msg = (j.get("message") or {}).get("content") or j.get("response") or ""
-                    if msg:
-                        return msg.strip()
-        except Exception:
-            pass
-
-    if use_cloud and OpenAI is not None and openai_api_key:
-        try:
-            client = OpenAI(api_key=openai_api_key)
-            resp = client.chat.completions.create(  # type: ignore
-                model=openai_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
-                ],
-                temperature=0.2,
-            )
-            return (resp.choices[0].message.content or "").strip()  # type: ignore
-        except Exception:
-            pass
-
-    # Last-ditch: return a template
-    return "I could not reach a language model. Please ensure Ollama is running or provide cloud credentials."
+        return await _ollama_chat(system, user, url=ollama_url, model=ollama_model)
+    return _extractive_fallback_answer(user)

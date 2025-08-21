@@ -4,6 +4,9 @@
     --bg: #0b1220;
     --panel: #0f172a;
     --muted: #94a3b8;
+    --ok: #10b981;
+    --warn: #f59e0b;
+    --err: #ef4444;
   }
   
   .main { background: var(--bg); }
@@ -20,6 +23,18 @@
     box-shadow: 0 10px 20px rgba(2,6,23,0.25);
   }
   
+  .badge {
+    display:inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid rgba(148,163,184,0.3);
+    color: #cbd5e1;
+  }
+  .badge.ok { border-color: rgba(16,185,129,0.4); color: #34d399; }
+  .badge.mo { border-color: rgba(245,158,11,0.4); color: #fbbf24; }
+  .badge.err{ border-color: rgba(239,68,68,0.4); color: #f87171; }
+  
   .kbd {
     background: #111827;
     border: 1px solid #374151;
@@ -28,3 +43,5 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     color: #cbd5e1;
   }
+  
+  hr.sep { border:none; border-top:1px solid rgba(148,163,184,0.18); margin: 0.5rem 0 1rem; }
