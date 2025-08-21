@@ -1,87 +1,153 @@
 # mcp_ai/mcp_streamlit/graph.py
 from __future__ import annotations
-import json, os, pathlib
-from typing import Any, Dict, List, Tuple
+import os, json, pathlib
+from typing import List, Tuple, Dict, Any
 
 import numpy as np
 
-from .config import settings
-from .data import load_items_jsonl, file_display_name, get_text_from_item
-from .ai import embed_texts
+# absolute (no leading dot) so it works when app.py is run as a script
+from config import settings
+from ai import embed_texts
 
-def _cos_sim(a: np.ndarray, b: np.ndarray) -> float:
-    an = float(np.linalg.norm(a)); bn = float(np.linalg.norm(b))
-    if an <= 1e-9 or bn <= 1e-9: return 0.0
-    return float(np.dot(a / an, b / bn))
 
-async def ensure_graph_edges(
+def _load_item_summaries(run_dir: str) -> List[Tuple[str, str]]:
+    """
+    Return [(path, text_for_embedding), ...] using lightweight text so we
+    don't OOM on very large files. Prefer ai.fast.summary + filename.
+    """
+    items_path = os.path.join(run_dir, "items.jsonl")
+    if not os.path.isfile(items_path):
+        return []
+    rows: List[Tuple[str, str]] = []
+    with open(items_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            path = rec.get("path") or rec.get("filename") or "unknown"
+            filename = pathlib.Path(path).name
+            ai_fast = ((rec.get("ai") or {}).get("ai_fast") or {})
+            summary = ai_fast.get("summary") or ""
+            domain = ai_fast.get("domain") or rec.get("domain") or ""
+            # small, stable embedding string (title + domain + summary)
+            text = f"{filename}\nDomain: {domain}\n{summary}".strip()
+            if not text:
+                # fallback to any available text
+                raw = (rec.get("ai") or {}).get("_raw_text") or rec.get("text") or ""
+                text = f"{filename}\n{raw[:2000]}"
+            rows.append((path, text))
+    return rows
+
+
+def ensure_graph_edges(
     run_dir: str,
-    *,
     k: int = 3,
     min_sim: float = 0.32,
-    use_ollama: bool,
-    ollama_url: str,
-    ollama_embed_model: str,
-    use_cloud: bool,
-    cloud_provider: str,
-    openai_api_key: str | None,
-    openai_embed_model: str,
+    *,
+    use_ollama: bool = True,
+    ollama_url: str | None = None,
+    ollama_embed_model: str | None = None,
+    use_cloud: bool = False,
+    cloud_provider: str = "none",
+    openai_api_key: str | None = None,
+    openai_embed_model: str | None = None,
 ) -> Tuple[str, int]:
     """
-    Build graph_edges.jsonl (src,dst,weight) if missing; return (path, n_edges).
+    Build k-NN edges over per-file embeddings (one vector per file) and
+    write JSONL edges file. Returns (edges_path, n_edges).
     """
-    out_path = os.path.join(run_dir, "graph_edges.jsonl")
-    if os.path.isfile(out_path):
-        # count lines
-        n = sum(1 for _ in open(out_path, "r", encoding="utf-8", errors="ignore"))
-        return out_path, n
-
-    items = load_items_jsonl(run_dir)
-    docs: List[Tuple[str, str]] = []  # (path, text)
-    for r in items:
-        p = r.get("path") or ""
-        txt = get_text_from_item(r)
-        if not txt:
-            # fall back to summary if text missing
-            ai = (r.get("ai") or {}).get("ai_fast") or {}
-            sm = ai.get("summary") or ""
-            if sm:
-                txt = sm
-        if txt.strip():
-            docs.append((p, txt.strip()))
+    edges_path = os.path.join(run_dir, "graph_edges.jsonl")
+    docs = _load_item_summaries(run_dir)
     if not docs:
-        pathlib.Path(out_path).write_text("", encoding="utf-8")
-        return out_path, 0
+        # still create an empty file to satisfy the UI
+        with open(edges_path, "w", encoding="utf-8") as f:
+            pass
+        return edges_path, 0
 
-    vecs = await embed_texts(
-        [t for _, t in docs],
+    labels = [d[0] for d in docs]
+    corpus = [d[1] for d in docs]
+
+    vecs = embed_texts(
+        corpus,
         use_ollama=use_ollama,
-        ollama_url=ollama_url,
-        ollama_model=ollama_embed_model,
+        ollama_url=ollama_url or settings.OLLAMA_URL,
+        ollama_model=ollama_embed_model or settings.OLLAMA_EMBED_MODEL,
         use_cloud=use_cloud,
         cloud_provider=cloud_provider,
-        openai_api_key=openai_api_key,
-        openai_embed_model=openai_embed_model,
+        openai_api_key=openai_api_key or getattr(settings, "OPENAI_API_KEY", None),
+        openai_embed_model=openai_embed_model or settings.OPENAI_EMBED_MODEL,
     )
+    # (N, D)
+    V = np.array(vecs, dtype=float)
+    # Normalize
+    norms = np.linalg.norm(V, axis=1, keepdims=True) + 1e-9
+    VN = V / norms
 
-    # Build symmetric KNN edges with threshold
-    edges: List[Tuple[int, int, float]] = []
-    n = len(vecs)
-    for i in range(n):
-        sims: List[Tuple[int, float]] = []
-        for j in range(n):
-            if i == j: 
+    # Cosine similarity matrix (N x N)
+    S = VN @ VN.T
+    np.fill_diagonal(S, -1.0)  # exclude self
+
+    # For each i, take top-k neighbors j with S[i,j] >= min_sim
+    edges: List[Dict[str, Any]] = []
+    N = S.shape[0]
+    for i in range(N):
+        # argsort descending
+        idxs = np.argsort(-S[i])[: max(8, k + 2)]
+        added = 0
+        for j in idxs:
+            if j < 0 or j >= N: 
                 continue
-            s = _cos_sim(vecs[i], vecs[j])
-            if s >= min_sim:
-                sims.append((j, s))
-        sims.sort(key=lambda t: t[1], reverse=True)
-        for j, s in sims[:k]:
-            if i < j:  # prevent duplicates; we’ll add undirected once
-                edges.append((i, j, s))
+            sim = float(S[i, j])
+            if sim < min_sim:
+                continue
+            # avoid duplicating both (i->j) and (j->i); only keep i<j
+            if i < j:
+                edges.append({"src": labels[i], "dst": labels[j], "type": "related", "weight": round(sim, 4)})
+                added += 1
+            if added >= k:
+                break
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        for i, j, s in edges:
-            f.write(json.dumps({"src": docs[i][0], "dst": docs[j][0], "weight": round(float(s), 4)}) + "\n")
+    # Write JSONL
+    with open(edges_path, "w", encoding="utf-8") as f:
+        for e in edges:
+            f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
-    return out_path, len(edges)
+    return edges_path, len(edges)
+
+
+def build_graph_html(edges_path: str) -> str:
+    """
+    Small helper for legacy pages/** imports, and also handy for previews.
+    """
+    from pyvis.network import Network
+
+    net = Network(height="600px", width="100%", bgcolor="#0b1220", font_color="#e2e8f0", directed=False)
+    edges: List[Dict[str, Any]] = []
+    nodes: set[str] = set()
+    if os.path.isfile(edges_path):
+        with open(edges_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                edges.append(e)
+                nodes.add(e["src"]); nodes.add(e["dst"])
+
+    for n in nodes:
+        label = pathlib.Path(n).name
+        net.add_node(n, label=label, title=n, shape="dot", size=12, color="#1f6feb")
+
+    for e in edges:
+        w = e.get("weight", 0.3)
+        net.add_edge(e["src"], e["dst"], value=max(1, int(float(w) * 10)), color="#94a3b8")
+
+    net.toggle_physics(True)
+    return net.generate_html(notebook=False)

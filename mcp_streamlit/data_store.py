@@ -2,7 +2,7 @@ from __future__ import annotations
 import os, json, hashlib
 from typing import Dict, Any, List, Tuple, Optional
 import pandas as pd
-from .config import settings
+from config import settings
 
 class DataStore:
     def __init__(self) -> None:
