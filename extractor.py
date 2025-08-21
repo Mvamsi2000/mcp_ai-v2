@@ -80,6 +80,37 @@ def _read_text_small(path: str, max_mb: int = 25) -> Optional[str]:
 def _has_tool(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
+def _maybe_detect_language(text: str, profile: Dict[str, Any]) -> Optional[str]:
+    """
+    Best-effort language detection for texty outputs (NOT used for A/V; av_utils already reports language).
+    Enabled by profile['detect_language'] (False by default). Uses whatever is installed: langid or langdetect.
+    """
+    try:
+        if not profile.get("detect_language"):
+            return None
+        t = (text or "").strip()
+        if len(t) < int(profile.get("detect_language_min_chars", 50)):
+            return None
+
+        # Try langid (fast, no network)
+        try:
+            import langid  # type: ignore
+            code, _ = langid.classify(t)
+            return code or None
+        except Exception:
+            pass
+
+        # Fallback: langdetect
+        try:
+            from langdetect import detect  # type: ignore
+            code = detect(t)
+            return code or None
+        except Exception:
+            pass
+    except Exception as e:
+        log.debug("language detection failed: %r", e)
+    return None
+
 # ---------------------------
 # PDF extraction cascade
 # ---------------------------
@@ -88,6 +119,7 @@ def _extract_pdf_text(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
     """
     Try PDF text extract via configured cascade:
       pymupdf -> pdfminer -> pdfplumber -> OCR (if profile.ocr true)
+    If nothing yields text, return metadata_only (not ok).
     """
     cascade = list((profile.get("parse_pdf_order") or ["pymupdf", "pdfminer", "pdfplumber", "ocr"]))
     meta: Dict[str, Any] = {"ext": ".pdf", "engine": "none", "cascade": cascade}
@@ -106,6 +138,7 @@ def _extract_pdf_text(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
             text = "\n".join(parts)
             meta.update({"engine": "pymupdf", "pages": pages, "elapsed_s": round(time.time()-t0,3)})
             if text.strip():
+                meta["language"] = _maybe_detect_language(text, profile)
                 return _ok("ok", meta, text)
         except Exception as e:
             log.debug("pymupdf failed on %s: %r", path, e)
@@ -118,6 +151,7 @@ def _extract_pdf_text(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
             text = pdfminer_extract_text(path) or ""
             meta.update({"engine": "pdfminer", "elapsed_s": round(time.time()-t0,3)})
             if text.strip():
+                meta["language"] = _maybe_detect_language(text, profile)
                 return _ok("ok", meta, text)
         except Exception as e:
             log.debug("pdfminer failed on %s: %r", path, e)
@@ -134,17 +168,17 @@ def _extract_pdf_text(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
             text = "\n".join([p for p in parts if p])
             meta.update({"engine": "pdfplumber", "elapsed_s": round(time.time()-t0,3)})
             if text.strip():
+                meta["language"] = _maybe_detect_language(text, profile)
                 return _ok("ok", meta, text)
         except Exception as e:
             log.debug("pdfplumber failed on %s: %r", path, e)
 
     # 4) OCR (if allowed)
     if "ocr" in cascade and profile.get("ocr"):
-        ocr_max_pages = int(profile.get("ocr_max_pages", 10))
-        return _extract_pdf_ocr(path, profile, meta_base=meta, max_pages=ocr_max_pages)
+        return _extract_pdf_ocr(path, profile, meta_base=meta, max_pages=int(profile.get("ocr_max_pages", 10)))
 
-    # No crash; just no text
-    return _ok("ok", meta, "")
+    # No crash; just no text anywhere + OCR not allowed
+    return _ok("metadata_only", meta, "", "no extractable text (no text layer / OCR disabled)")
 
 def _extract_pdf_ocr(path: str, profile: Dict[str, Any], meta_base: Dict[str, Any], max_pages: int) -> Dict[str, Any]:
     """
@@ -195,7 +229,11 @@ def _extract_pdf_ocr(path: str, profile: Dict[str, Any], meta_base: Dict[str, An
         "elapsed_s": round(time.time() - t0_all, 3),
         "ocr_engine_order": engines,
     })
-    return _ok("ok", meta, "\n".join(text_parts))
+    text = "\n".join(text_parts).strip()
+    if text:
+        meta["language"] = _maybe_detect_language(text, profile)
+        return _ok("ok", meta, text)
+    return _ok("metadata_only", meta, "", "ocr produced no text")
 
 # ---------------------------
 # Image OCR cascade
@@ -270,7 +308,10 @@ def _extract_docx(path: str) -> Dict[str, Any]:
         import docx2txt  # type: ignore
         t0 = time.time()
         txt = docx2txt.process(path) or ""
-        return _ok("ok", {"ext": ".docx", "engine": "docx2txt", "elapsed_s": round(time.time()-t0,3)}, txt)
+        meta = {"ext": ".docx", "engine": "docx2txt", "elapsed_s": round(time.time()-t0,3)}
+        if txt.strip():
+            meta["language"] = _maybe_detect_language(txt, {})
+        return _ok("ok", meta, txt)
     except Exception as e:
         log.debug("docx2txt failed on %s: %r", path, e)
         return _ok("metadata_only", {"ext": ".docx", "engine": "none"}, "", "docx2txt not available or failed")
@@ -285,7 +326,11 @@ def _extract_pptx(path: str) -> Dict[str, Any]:
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text:
                     parts.append(shape.text)
-        return _ok("ok", {"ext": ".pptx", "engine": "python-pptx", "elapsed_s": round(time.time()-t0,3)}, "\n".join(parts))
+        txt = "\n".join(parts)
+        meta = {"ext": ".pptx", "engine": "python-pptx", "elapsed_s": round(time.time()-t0,3)}
+        if txt.strip():
+            meta["language"] = _maybe_detect_language(txt, {})
+        return _ok("ok", meta, txt)
     except Exception as e:
         log.debug("python-pptx failed on %s: %r", path, e)
         return _ok("metadata_only", {"ext": ".pptx", "engine": "none"}, "", "python-pptx not available or failed")
@@ -301,24 +346,37 @@ def _extract_xlsx(path: str) -> Dict[str, Any]:
                 vals = [str(v) for v in row if v is not None]
                 if vals:
                     parts.append(", ".join(vals))
-        return _ok("ok", {"ext": ".xlsx", "engine": "openpyxl", "elapsed_s": round(time.time()-t0,3)}, "\n".join(parts))
+        txt = "\n".join(parts)
+        meta = {"ext": ".xlsx", "engine": "openpyxl", "elapsed_s": round(time.time()-t0,3)}
+        if txt.strip():
+            meta["language"] = _maybe_detect_language(txt, {})
+        return _ok("ok", meta, txt)
     except Exception as e:
         log.debug("openpyxl failed on %s: %r", path, e)
         return _ok("metadata_only", {"ext": ".xlsx", "engine": "none"}, "", "openpyxl not available or failed")
 
-def _extract_html(path: str) -> Dict[str, Any]:
+def _extract_html(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
     # Prefer BeautifulSoup if available
     try:
         from bs4 import BeautifulSoup  # type: ignore
         t0 = time.time()
         html = _read_text_small(path, max_mb=10) or ""
         soup = BeautifulSoup(html, "html.parser")
-        txt = soup.get_text("\n")
-        return _ok("ok", {"ext": ".html", "engine": "bs4", "elapsed_s": round(time.time()-t0,3)}, txt)
+        txt = (soup.get_text("\n") or "").strip()
+        meta = {"ext": ".html", "engine": "bs4", "elapsed_s": round(time.time()-t0,3)}
+        if txt:
+            meta["language"] = _maybe_detect_language(txt, profile)
+            return _ok("ok", meta, txt)
+        return _ok("metadata_only", meta, "", "no extractable text")
     except Exception:
         txt = _read_text_small(path, max_mb=10)
         if txt is not None:
-            return _ok("ok", {"ext": ".html", "engine": "text"}, txt)
+            txt = (txt or "").strip()
+            meta = {"ext": ".html", "engine": "text"}
+            if txt:
+                meta["language"] = _maybe_detect_language(txt, profile)
+                return _ok("ok", meta, txt)
+            return _ok("metadata_only", meta, "", "no extractable text")
         return _ok("metadata_only", {"ext": ".html", "engine": "none"}, "", "html too large or bs4 not available")
 
 # ---------------------------
@@ -346,7 +404,7 @@ def _extract_image(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
     text = ""
     if profile.get("ocr"):
         t_text, used = _ocr_bytes(img_bytes, engines, lang, timebox_s=timebox_s)
-        text = t_text
+        text = (t_text or "").strip()
         meta["engine"] = used
 
     # EXIF
@@ -366,7 +424,16 @@ def _extract_image(path: str, profile: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as e:
             log.debug("exif read failed: %r", e)
 
-    return _ok("ok", meta, text)
+    if text:
+        meta["language"] = _maybe_detect_language(text, profile)
+        return _ok("ok", meta, text)
+
+    # If OCR enabled but produced no text, mark metadata_only (this fixes the PNG issue you saw)
+    if profile.get("ocr"):
+        return _ok("metadata_only", meta, "", "no text recognized")
+
+    # If OCR disabled, still metadata_only since we didn't read text
+    return _ok("metadata_only", meta, "", "ocr disabled for images")
 
 # ---------------------------
 # Main dispatch
@@ -423,7 +490,7 @@ def extract_content(
     if ext == ".xlsx":
         return _extract_xlsx(path)
     if ext in (".html", ".htm"):
-        return _extract_html(path)
+        return _extract_html(path, profile)
 
     # 5) Plaintext-ish (incl. .mod if NOT policy-blocked)
     if ext in (".txt", ".csv", ".tsv", ".log", ".md", ".json", ".xml", ".ini", ".cfg", ".yml", ".yaml", ".mod"):
@@ -433,8 +500,12 @@ def extract_content(
 
         txt = _read_text_small(path, max_mb=25)
         if txt is not None:
-            return _ok("ok", {"ext": ext, "engine": "text"}, txt)
-
+            txt_stripped = (txt or "").strip()
+            meta = {"ext": ext, "engine": "text"}
+            if txt_stripped:
+                meta["language"] = _maybe_detect_language(txt_stripped, profile)
+                return _ok("ok", meta, txt)
+            return _ok("metadata_only", meta, "", "no extractable text")
         # try_text_then_metadata_only fallback (e.g., very large .json/.log)
         if ext in [e.lower() for e in (type_policies.get("try_text_then_metadata_only") or [])]:
             return _ok("metadata_only", {"ext": ext, "engine": "none"}, "", "policy: try_text_then_metadata_only → metadata_only")

@@ -11702,3 +11702,27 @@
 2025-08-19 23:56:02,543 INFO main: → [56] /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Client/Models/EMP_INFO.MOD
 2025-08-19 23:56:02,543 DEBUG main: No text extracted for /Users/vamsi_mure/Documents/mcp_ai-v2/mcp_ai/input_files/SampleFiles/Client/Models/EMP_INFO.MOD; skipping AI.
 2025-08-19 23:56:02,555 INFO main: Run 20250819_212701_867a9bfb completed. Files: 56, elapsed: 8940.98s
+2025-08-20 00:29:47,299 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:29:47,306 WARNING easyocr.easyocr: Downloading detection model, please wait. This may take several minutes depending upon your network connection.
+2025-08-20 00:35:47,758 WARNING llm_agent: deep_pass_local: could not parse JSON; returning heuristic summary.
+2025-08-20 00:35:47,775 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:36:45,842 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:37:37,114 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:37:37,719 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:38:25,553 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:43:00,005 WARNING llm_agent: deep_pass_local: could not parse JSON; returning heuristic summary.
+2025-08-20 00:57:15,669 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:58:11,200 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:59:10,496 WARNING llm_agent: deep_pass_local: could not parse JSON; returning heuristic summary.
+2025-08-20 00:59:10,516 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 00:59:10,960 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:00:03,025 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:08:45,182 WARNING llm_agent: deep_pass_local: could not parse JSON; returning heuristic summary.
+2025-08-20 01:08:45,492 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:20,258 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:20,976 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:21,593 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:22,172 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:23,004 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 01:09:23,720 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.
+2025-08-20 16:19:37,715 WARNING easyocr.easyocr: Using CPU. Note: This module is much faster with a GPU.

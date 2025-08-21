@@ -12,7 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import logging
 log = logging.getLogger("av_utils")
 
+# ──────────────────────────────────────────────────────────────────────────────
 # Optional deps (both are optional; we degrade gracefully)
+# ──────────────────────────────────────────────────────────────────────────────
 try:
     from faster_whisper import WhisperModel  # type: ignore
 except Exception:  # pragma: no cover
@@ -27,7 +29,6 @@ except Exception:  # pragma: no cover
 # ──────────────────────────────────────────────────────────────────────────────
 # FFmpeg / probing
 # ──────────────────────────────────────────────────────────────────────────────
-
 def _has_tool(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
@@ -47,15 +48,29 @@ def _ffprobe_json(path: str) -> Dict[str, Any]:
     except Exception as e:
         return {"error": f"ffprobe exception: {e!r}"}
 
-def _extract_wav_16k_mono(src: str, *, out_wav: str) -> Tuple[bool, Optional[str]]:
-    """Demux/re-encode to mono 16k PCM WAV. Returns (ok, error)."""
+def _extract_wav_16k_mono(
+    src: str,
+    *,
+    out_wav: str,
+    start_at_seconds: int = 0,
+    max_seconds: int = 0,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Demux/re-encode to mono 16k PCM WAV. Returns (ok, error).
+    Optionally trims with -ss and -t to timebox long media.
+    """
     if not _has_tool("ffmpeg"):
         return False, "ffmpeg not on PATH"
     cmd = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-y", "-i", src, "-ac", "1", "-ar", "16000", "-vn",
-        out_wav,
+        "-y",
     ]
+    if start_at_seconds and start_at_seconds > 0:
+        cmd += ["-ss", str(int(start_at_seconds))]
+    cmd += ["-i", src, "-ac", "1", "-ar", "16000", "-vn"]
+    if max_seconds and max_seconds > 0:
+        cmd += ["-t", str(int(max_seconds))]
+    cmd += [out_wav]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=1800)
         if p.returncode != 0:
@@ -65,6 +80,42 @@ def _extract_wav_16k_mono(src: str, *, out_wav: str) -> Tuple[bool, Optional[str
         return True, None
     except Exception as e:
         return False, f"ffmpeg exception: {e!r}"
+
+def _remux_to_m4a(src: str, *, start_at_seconds: int = 0, max_seconds: int = 0) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Try to remux the first audio stream to M4A (copy). If that fails, re-encode AAC.
+    Returns (m4a_path, error).
+    """
+    if not _has_tool("ffmpeg"):
+        return None, "ffmpeg not on PATH"
+
+    def _try(cmd: List[str]) -> Tuple[Optional[str], Optional[str]]:
+        out = tempfile.NamedTemporaryFile(prefix="mcpai_", suffix=".m4a", delete=False).name
+        full = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+        if start_at_seconds and start_at_seconds > 0:
+            full += ["-ss", str(int(start_at_seconds))]
+        full += ["-i", src, "-vn", "-map", "0:a:0"] + cmd
+        if max_seconds and max_seconds > 0:
+            full += ["-t", str(int(max_seconds))]
+        full.append(out)
+        p = subprocess.run(full, capture_output=True, text=True, check=False, timeout=1800)
+        if p.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
+            return out, None
+        try:
+            os.unlink(out)
+        except Exception:
+            pass
+        return None, (p.stderr or p.stdout or "")[:800]
+
+    # 1) Copy
+    out1, err1 = _try(["-c:a", "copy"])
+    if out1:
+        return out1, None
+    # 2) Re-encode
+    out2, err2 = _try(["-c:a", "aac", "-b:a", "192k"])
+    if out2:
+        return out2, None
+    return None, f"remux/re-encode failed: {err1 or ''} {err2 or ''}".strip()
 
 def _segment_wav(src_wav: str, chunk_seconds: int) -> Tuple[List[str], Optional[str]]:
     """Split WAV into fixed chunks with ffmpeg segmenter. Returns (chunks, err)."""
@@ -98,7 +149,6 @@ def _segment_wav(src_wav: str, chunk_seconds: int) -> Tuple[List[str], Optional[
 # ──────────────────────────────────────────────────────────────────────────────
 # ASR config helpers
 # ──────────────────────────────────────────────────────────────────────────────
-
 def _get_asr_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Merge ASR knobs from either:
@@ -133,7 +183,6 @@ def _get_asr_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────────────
 # ASR engines (faster-whisper + openai/whisper)
 # ──────────────────────────────────────────────────────────────────────────────
-
 _FW_CACHE: Dict[str, Any] = {}  # memoized model per (model,device,compute_type)
 
 def _get_fw_model(asr: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
@@ -152,6 +201,7 @@ def _get_fw_model(asr: Dict[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
     return _FW_CACHE["model"], None
 
 def _fw_transcribe(src_path: str, asr: Dict[str, Any], *, language_hint: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Transcribe with faster-whisper; return (text, meta)."""
     meta: Dict[str, Any] = {"engine_detail": "faster_whisper"}
     model, err = _get_fw_model(asr)
     if err or not model:
@@ -179,11 +229,12 @@ def _fw_transcribe(src_path: str, asr: Dict[str, Any], *, language_hint: Optiona
         meta["elapsed_s"] = round(time.time() - t0, 3)
         return text, meta
     except Exception as e:
-        meta["error"] = f"faster-whisper error: {e!r}"
+        meta["error"] = f"faster_whisper error: {e!r}"
         meta["elapsed_s"] = round(time.time() - t0, 3)
         return "", meta
 
 def _openai_whisper_transcribe(src_path: str, asr: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Transcribe with openai/whisper (local pip)."""
     meta: Dict[str, Any] = {"engine_detail": "openai_whisper"}
     if openai_whisper is None:
         meta["error"] = "openai-whisper not installed"
@@ -205,94 +256,160 @@ def _openai_whisper_transcribe(src_path: str, asr: Dict[str, Any]) -> Tuple[str,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def _truncate_errors(errs: List[str], max_len: int = 400) -> List[str]:
+    out: List[str] = []
+    for e in errs:
+        if isinstance(e, str) and len(e) > max_len:
+            out.append(e[-max_len:])
+        else:
+            out.append(e)
+    return out
+
+def _is_video_ext(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+
+def _probe_duration_sec(probe: Dict[str, Any]) -> Optional[float]:
+    try:
+        return float((probe.get("format") or {}).get("duration") or 0.0)
+    except Exception:
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public API — transcribe_av
 # ──────────────────────────────────────────────────────────────────────────────
-
 def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Best-effort A/V transcription with strong fallbacks:
-      1) ffmpeg → mono 16k WAV (always try)
-      2) ASR engine order (faster_whisper → openai/whisper → demo)
-      3) Optional chunking for long media
+      1) ffprobe (diagnostic) and optional timeboxing (av_start_at_seconds / av_max_seconds)
+      2) ffmpeg → mono 16k WAV
+      3) ASR engine order (faster_whisper → openai/whisper → demo)
+      4) Optional chunking for long media (av_chunk_seconds)
+      5) Remux-to-M4A fallback if decoding is flaky
+
     Returns: { extraction_status, skipped_reason, text, meta }
     """
     t0 = time.time()
     asr = _get_asr_cfg(cfg)
 
-    # Pull profile knobs
-    order = list(profile.get("av_transcribe_order") or asr.get("engine_order") or ["faster_whisper","whisper","demo"])
-    chunk_seconds = int(profile.get("av_chunk_seconds", 0) or 0)  # 0 = no chunking
-    # NOTE: we don’t hard-trim duration by default (you can add av_max_seconds if needed)
+    # Profile knobs
+    order = list(profile.get("av_transcribe_order") or asr.get("engine_order") or ["faster_whisper", "whisper", "demo"])
+    chunk_seconds = int(profile.get("av_chunk_seconds", 0) or 0)       # 0 = no chunking
+    start_at_seconds = int(profile.get("av_start_at_seconds", 0) or 0) # optional seek
+    max_seconds = int(profile.get("av_max_seconds", 0) or 0)           # 0 = full duration
 
     attempts: List[Dict[str, Any]] = []
     errors: List[str] = []
+    best_language: Optional[str] = None
 
     # Probe is diagnostic only (we still try extraction regardless)
     probe = _ffprobe_json(path)
     audio_streams = [s for s in (probe.get("streams") or []) if s.get("codec_type") == "audio"]
+    src_duration = _probe_duration_sec(probe)
 
-    # Attempt to extract normalized WAV
+    # Extract normalized WAV (timeboxed if configured)
     tmpdir = tempfile.mkdtemp(prefix="mcpai_av_")
     wav_path = os.path.join(tmpdir, "audio.16k.wav")
-    ok_wav, wav_err = _extract_wav_16k_mono(path, out_wav=wav_path)
+    ok_wav, wav_err = _extract_wav_16k_mono(
+        path,
+        out_wav=wav_path,
+        start_at_seconds=start_at_seconds,
+        max_seconds=max_seconds,
+    )
     attempts.append({"step": "ffmpeg_wav", "ok": ok_wav})
     if not ok_wav and wav_err:
         errors.append(wav_err)
 
-    # Build the sequence of input candidates per engine
-    # For faster-whisper we prefer WAV; for openai/whisper both WAV or original path work.
+    # Build candidate inputs for each engine
     def _engine_inputs(engine: str) -> List[str]:
-        if engine == "faster_whisper":
-            return [wav_path] if ok_wav else [path]  # still try direct if no WAV (it may internally decode)
-        if engine == "whisper":
-            return [wav_path] if ok_wav else [path]
-        if engine == "demo":
-            return [wav_path] if ok_wav else [path]
-        return [wav_path] if ok_wav else [path]
+        # WAV is preferred for stability; fall back to original source path
+        cands: List[str] = []
+        if ok_wav:
+            cands.append(wav_path)
+        cands.append(path)
+        return cands
 
     transcript_parts: List[str] = []
     engine_used: Optional[str] = None
 
     for eng in order:
         inputs = _engine_inputs(eng)
+        engine_ok = False
+
         for inp in inputs:
-            if eng == "faster_whisper":
-                # Optionally chunk long audio to keep memory bounded
-                chunks, seg_err = _segment_wav(inp, chunk_seconds) if (inp == wav_path and chunk_seconds > 0) else ([inp], None)
-                if seg_err:
-                    errors.append(seg_err)
-                seg_texts: List[str] = []
-                ok_any = False
-                for ch in chunks:
-                    txt, meta_fw = _fw_transcribe(ch, asr)
-                    attempts.append({"step": "faster_whisper", "elapsed_s": meta_fw.get("elapsed_s"), "error": meta_fw.get("error")})
-                    if meta_fw.get("error"):
-                        errors.append(meta_fw["error"])
+            # Special fallback: if WAV failed and we're on the original path, try M4A remux
+            m4a_path: Optional[str] = None
+            if (not ok_wav) and inp == path and eng in ("faster_whisper", "whisper"):
+                m4a_path, remux_err = _remux_to_m4a(path, start_at_seconds=start_at_seconds, max_seconds=max_seconds)
+                if remux_err:
+                    errors.append(remux_err)
+                if m4a_path:
+                    inputs = [m4a_path] + inputs  # prioritize remuxed audio
+
+            try:
+                if eng == "faster_whisper":
+                    # Optional chunking (WAV only)
+                    chunks, seg_err = _segment_wav(inp, chunk_seconds) if (inp == wav_path and chunk_seconds > 0) else ([inp], None)
+                    if seg_err:
+                        errors.append(seg_err)
+                    seg_texts: List[str] = []
+                    for ch in chunks:
+                        txt, meta_fw = _fw_transcribe(ch, asr)
+                        attempts.append({"step": "faster_whisper", "input": os.path.basename(ch), "elapsed_s": meta_fw.get("elapsed_s"), "error": meta_fw.get("error")})
+                        if meta_fw.get("language") and not best_language:
+                            best_language = meta_fw.get("language")
+                        if meta_fw.get("error"):
+                            errors.append(meta_fw["error"])
+                        if txt:
+                            seg_texts.append(txt)
+                    text = " ".join(seg_texts).strip()
+                    if text:
+                        transcript_parts.append(text)
+                        engine_used = "faster_whisper"
+                        engine_ok = True
+                        # cleanup remux if created
+                        if m4a_path:
+                            try: os.unlink(m4a_path)
+                            except Exception: pass
+                        break
+
+                elif eng == "whisper":
+                    txt, meta_w = _openai_whisper_transcribe(inp, asr)
+                    attempts.append({"step": "openai_whisper", "input": os.path.basename(inp), "elapsed_s": meta_w.get("elapsed_s"), "error": meta_w.get("error")})
+                    if meta_w.get("language") and not best_language:
+                        best_language = meta_w.get("language")
+                    if meta_w.get("error"):
+                        errors.append(meta_w["error"])
                     if txt:
-                        ok_any = True
-                        seg_texts.append(txt)
-                text = " ".join(seg_texts).strip()
-                if ok_any and text:
-                    transcript_parts.append(text)
-                    engine_used = "faster_whisper"
-                    break  # engine satisfied
-            elif eng == "whisper":
-                txt, meta_w = _openai_whisper_transcribe(inp, asr)
-                attempts.append({"step": "openai_whisper", "elapsed_s": meta_w.get("elapsed_s"), "error": meta_w.get("error")})
-                if meta_w.get("error"):
-                    errors.append(meta_w["error"])
-                if txt:
-                    transcript_parts.append(txt)
-                    engine_used = "openai_whisper"
+                        transcript_parts.append(txt)
+                        engine_used = "openai_whisper"
+                        engine_ok = True
+                        if m4a_path:
+                            try: os.unlink(m4a_path)
+                            except Exception: pass
+                        break
+
+                elif eng == "demo":
+                    attempts.append({"step": "demo"})
+                    engine_used = "demo"
+                    engine_ok = True
+                    if m4a_path:
+                        try: os.unlink(m4a_path)
+                        except Exception: pass
                     break
-            elif eng == "demo":
-                attempts.append({"step": "demo"})
-                # keep empty transcript but mark engine to indicate path completed
-                engine_used = "demo"
-                break
-            else:
-                attempts.append({"step": f"unknown_engine:{eng}"})
-        if engine_used:
+
+                else:
+                    attempts.append({"step": f"unknown_engine:{eng}"})
+
+            finally:
+                # cleanup m4a if we didn’t already
+                if m4a_path:
+                    try: os.unlink(m4a_path)
+                    except Exception: pass
+
+        if engine_ok and engine_used:
             break
 
     # Cleanup temp artifacts
@@ -303,7 +420,7 @@ def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Di
     except Exception:
         pass
 
-    # Compose response
+    # Compose response meta
     meta: Dict[str, Any] = {
         "ext": os.path.splitext(path)[1].lower(),
         "engine": engine_used or "none",
@@ -328,9 +445,20 @@ def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Di
         "elapsed_s": round(time.time() - t0, 3),
     }
 
+    if best_language:
+        meta["language"] = best_language
+    if src_duration is not None and src_duration > 0:
+        meta["source_duration"] = src_duration
+    if start_at_seconds:
+        meta["start_at_seconds"] = start_at_seconds
+    if max_seconds:
+        meta["max_seconds"] = max_seconds
+    if chunk_seconds:
+        meta["chunk_seconds"] = chunk_seconds
+
     text = " ".join(p for p in transcript_parts if p).strip()
 
-    # If we got a non-empty transcript, success.
+    # Success
     if text:
         return {
             "extraction_status": "ok",
@@ -339,7 +467,7 @@ def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Di
             "meta": meta,
         }
 
-    # If the file truly has no audio streams (per probe), be explicit.
+    # No audio present → metadata_only, explicit reason
     if not audio_streams:
         return {
             "extraction_status": "metadata_only",
@@ -348,9 +476,8 @@ def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Di
             "meta": meta,
         }
 
-    # Otherwise, we tried but ended with empty text.
+    # Demo explicitly returns ok + empty text (keeps your pipeline behavior)
     if engine_used == "demo":
-        # Preserve your pipeline behavior: ok + engine demo + empty text
         return {
             "extraction_status": "ok",
             "skipped_reason": None,
@@ -358,28 +485,10 @@ def transcribe_av(path: str, profile: Dict[str, Any], cfg: Dict[str, Any]) -> Di
             "meta": meta,
         }
 
+    # Tried but got nothing
     return {
         "extraction_status": "metadata_only",
         "skipped_reason": "asr_empty_or_failed",
         "text": "",
         "meta": meta,
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Small utilities
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _truncate_errors(errs: List[str], max_len: int = 400) -> List[str]:
-    out: List[str] = []
-    for e in errs:
-        if isinstance(e, str) and len(e) > max_len:
-            out.append(e[-max_len:])
-        else:
-            out.append(e)
-    return out
-
-def _is_video_ext(path: str) -> bool:
-    return os.path.splitext(path)[1].lower() in {
-        ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"
     }
